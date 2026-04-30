@@ -10,9 +10,8 @@ This pipeline processes behavioral data from variable conflict 1-Port Platform M
 
 ## Acknowledgements
 
-This pipeline was built on top of the original analysis notebooks developed by **Hector Yarur Castillo**. His notebooks established the core logic for nosepoke histogram analysis, reward quantification, rewards-in-light-trial gating, the Reward-Avoidance Index, and shock avoidance classification that formed the foundation of this codebase. The present pipeline refactors and extends his work into a modular, automated, multi-session framework.
+This pipeline was built on top of the original analysis notebooks developed by **Hector Yarur Castillo**. His notebooks established the core logic for nosepoke histogram analysis, reward quantification, rewards-in-light-trial gating, the Reward-Avoidance Index, and shock avoidance classification that formed the foundation of this codebase. The present pipeline refactors and extends his work into a modular, automated, multi-session framework. Portions of this codebase were developed with assistance from Claude (Sonnet 4.6, Anthropic) and validated by ENV 2026.
 
-Portions of this codebase were developed with assistance from Claude (Sonnet 4.6, Anthropic) and validated by ENV 2026.
 ---
 
 ## Table of Contents
