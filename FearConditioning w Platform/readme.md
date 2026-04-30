@@ -26,7 +26,7 @@ This pipeline processes behavioral data from fear conditioning experiments recor
 
 ## Acknowledgements
 
-The procedures of the us_locked analysis were taken from Eastman Lewis and Kenya Barnes, modified only to ensure ease of integration into this pipeline.
+The procedures of the us_locked analysis were taken from Eastman Lewis and Kenya Barnes, modified only to ensure ease of integration into this pipeline. Portions of this codebase were developed with assistance from Claude (Sonnet 4.6, Anthropic) and validated by ENV 2026.
 
 ## 1. Quick Start
 
