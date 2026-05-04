@@ -1,9 +1,7 @@
-[README.md](https://github.com/user-attachments/files/27246527/README.md)
 # UNSI Lab Behavioral Pipelines
-
-## Overview
-Within this hub are folders containing python analysis files for specific behavioral assays, each with their own README.
+Within this hub are folders containing python analysis files for specific behavioral assays, each with their own README. Below allows you to see a selected preview of some outputs.
 <br><br>
+
 ## Example Outputs for 1-Port Platform Mediated Avoidance
 ### Cue-aligned nosepoke probability (trial-averaged)
 In order to quantify cue-evoked behavior, trial-aligned nosepoke activity is averaged across trials within each animal and then across animals within a treatment group, allowing visualization of how behavior evolves relative to cue onset. Similar cue-aligned analyses are performed for additional behavioral measures, including time on platform.
@@ -18,14 +16,14 @@ In order to summarize how subjects respond to and learn from aversive cues over 
 <div align="center"><img src="https://github.com/user-attachments/assets/2b7e8150-e692-41c6-8a19-af19b4e9a36b" width="48%"></div>
 
 <hr>
-
+## Example Outputs for Fear Conditioning w/ Platform
 ### % Time Freezing (trial-aligned)
 In order to quantify cue-evoked freezing behavior, % time freezing is computed within each trial window and averaged across trials within each animal and then across animals within a treatment group, allowing visualization of how cue-evoked freezing evolves across trials and days.
-<div align="center"><img src="https://github.com/user-attachments/assets/02682ee2-3f4f-4f71-bce3-a4ffe9e818a0" width="48%"></div>
+<div align="center"><img src="https://github.com/user-attachments/assets/ae88c4fc-d255-4aa2-a0f9-9637c6ac0110" width="90%"></div>
 
 ### Shock Outcome Classification (Evade / Escape / Endure)
 In order to characterize behavioral responses to aversive stimuli, CS+ trials are classified as Evade, Escape, or Endure based on platform occupancy during the shock window, and summarized across trials and animals within each treatment group to reveal differences in avoidance strategy.
-<div align="center"><img src="https://github.com/user-attachments/assets/a29ee84f-3df9-420e-b479-3ce63e29d663" width="48%"></div>
+<div align="center"><img src="https://github.com/user-attachments/assets/a29ee84f-3df9-420e-b479-3ce63e29d663" width="75%"></div>
 
 ### US-locked Platform Time
 In order to isolate behavior specifically during shock delivery, platform occupancy is computed within the US (shock) window for each trial, enabling assessment of avoidance performance independent of the full cue period and comparison across treatment groups.
