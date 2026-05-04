@@ -16,7 +16,9 @@ In order to summarize how subjects respond to and learn from aversive cues over 
 <div align="center"><img src="https://github.com/user-attachments/assets/2b7e8150-e692-41c6-8a19-af19b4e9a36b" width="48%"></div>
 
 <hr>
+
 ## Example Outputs for Fear Conditioning w/ Platform
+
 ### % Time Freezing (trial-aligned)
 In order to quantify cue-evoked freezing behavior, % time freezing is computed within each trial window and averaged across trials within each animal and then across animals within a treatment group, allowing visualization of how cue-evoked freezing evolves across trials and days.
 <div align="center"><img src="https://github.com/user-attachments/assets/ae88c4fc-d255-4aa2-a0f9-9637c6ac0110" width="90%"></div>
