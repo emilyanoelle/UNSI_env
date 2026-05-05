@@ -18,24 +18,54 @@ Two modes for identifying US windows (set USE_SHOCKER_COLUMN in runner.py):
       detected CS+ trial. Uses the same TTL/tone-status trial detection
       logic as platform_analysis.py. Valid for all sessions including yoked.
 
-Outputs (per treatment group, and optionally per cohort):
-  - us_locked_all_days_concat.csv      Long-format raw data
-  - us_locked_prism_ready.xlsx         Wide Prism-ready table (if enabled)
-  - us_locked_shock_avoidance.csv      Count of 100%-avoided US events
-  - us_locked_heatmap_<treatment>.svg  One heatmap per treatment group
+Outputs:
+  Per session/day folder:
+    BehaviorData/<day>/Analysis/US_lock_plttime/<treatment>/us_locked_all_days_concat.csv
+    BehaviorData/<day>/Analysis/US_lock_plttime/<treatment>/us_locked_prism_ready.xlsx
+    BehaviorData/<day>/Analysis/US_lock_plttime/<treatment>/us_locked_shock_avoidance.csv
+    BehaviorData/<day>/Analysis/US_lock_plttime/<treatment>/us_locked_heatmap_<treatment>.svg
+
+  Multi-cohort combined folder:
+    <ANALYSIS_OUTPUT_DIR>/US_lock_plttime/<treatment>/us_locked_heatmap_<treatment>.svg
+    where each figure tiles session days left-to-right.
 """
 
 from pathlib import Path
-import sys
 import re
+import sys
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 import seaborn as sns
+from matplotlib.colors import Normalize
+from matplotlib.cm import ScalarMappable
 
 import utils
+
+
+# =============================================================================
+# IMPORTANT NOTE — MULTI-COHORT ANIMAL ID COLLISIONS
+# =============================================================================
+#
+# In the multi-cohort combined figures, animals are labeled by `animal_id`
+# only to keep the figure readable.
+#
+# If the SAME `animal_id` appears in more than one cohort, those rows can be
+# merged during pivoting and will be averaged together for that panel. That can
+# silently produce misleading results.
+#
+# What the experimenter should do if this arises:
+#   1) Best option: make animal IDs globally unique before analysis.
+#      Example: C1_01, C1_02, C2_01, C2_02.
+#   2) If global uniqueness is not possible, switch the plotting code to use a
+#      composite label such as `f"{cohort_id}_{animal_id}"`.
+#      This is more verbose, but it prevents accidental row collisions.
+#
+# The pipeline prints a runtime warning when duplicate `animal_id` values are
+# detected across cohorts within the same day/treatment panel.
+# =============================================================================
 
 
 # =============================================================================
@@ -43,7 +73,7 @@ import utils
 # =============================================================================
 
 def _get_us_windows_mode_a(df: pd.DataFrame, time_col: str,
-                            cs_trials: list) -> list:
+                            cs_trials: list) -> tuple:
     """
     Mode A: detect US windows from 'Shocker active' column.
     Windows are intersected with CS+ trial boundaries to exclude any stray
@@ -59,7 +89,7 @@ def _get_us_windows_mode_a(df: pd.DataFrame, time_col: str,
     t = df[time_col].astype(float).to_numpy()
     s = df[shocker_col].fillna(0).astype(float).to_numpy()
 
-    # Build CS+ trial intervals for boundary enforcement
+    # Build CS+ trial intervals for boundary enforcement.
     cs_intervals = [(tr["start"], tr["end"]) for tr in cs_trials if tr["type"] == "CS+"]
 
     us_windows = []
@@ -74,38 +104,38 @@ def _get_us_windows_mode_a(df: pd.DataFrame, time_col: str,
         elif s[i] != 1 and in_block:
             in_block = False
             block_start = float(t[block_start_idx])
-            block_end   = float(t[i])
+            block_end = float(t[i])
 
-            # Restrict to within a CS+ window
+            # Restrict to within a CS+ window.
             for cs_start, cs_end in cs_intervals:
                 clipped_start = max(block_start, cs_start)
-                clipped_end   = min(block_end,   cs_end)
+                clipped_end = min(block_end, cs_end)
                 if clipped_end > clipped_start:
                     us_counter += 1
                     us_windows.append({
-                        "type":        "US",
-                        "start":       clipped_start,
-                        "end":         clipped_end,
+                        "type": "US",
+                        "start": clipped_start,
+                        "end": clipped_end,
                         "trial_index": us_counter,
-                        "source":      shocker_col,
+                        "source": shocker_col,
                     })
                     break  # each shocker block maps to at most one CS+ trial
 
-    # Handle file ending mid-block
+    # Handle file ending mid-block.
     if in_block:
         block_start = float(t[block_start_idx])
-        block_end   = float(t[-1])
+        block_end = float(t[-1])
         for cs_start, cs_end in cs_intervals:
             clipped_start = max(block_start, cs_start)
-            clipped_end   = min(block_end,   cs_end)
+            clipped_end = min(block_end, cs_end)
             if clipped_end > clipped_start:
                 us_counter += 1
                 us_windows.append({
-                    "type":        "US",
-                    "start":       clipped_start,
-                    "end":         clipped_end,
+                    "type": "US",
+                    "start": clipped_start,
+                    "end": clipped_end,
                     "trial_index": us_counter,
-                    "source":      shocker_col,
+                    "source": shocker_col,
                 })
                 break
 
@@ -122,14 +152,14 @@ def _get_us_windows_mode_b(cs_trials: list, us_duration_s: float) -> tuple:
     for tr in cs_trials:
         if tr["type"] != "CS+":
             continue
-        us_end   = tr["end"]
+        us_end = tr["end"]
         us_start = max(tr["start"], us_end - us_duration_s)
         us_windows.append({
-            "type":        "US",
-            "start":       us_start,
-            "end":         us_end,
+            "type": "US",
+            "start": us_start,
+            "end": us_end,
             "trial_index": tr["trial_index"],
-            "source":      "last_2s_of_CS+",
+            "source": "last_2s_of_CS+",
         })
     return us_windows, "last_2s_of_CS+"
 
@@ -152,45 +182,32 @@ def _process_file(csv_path: Path, meta: pd.DataFrame, day_dir: Path,
         run_log["excluded_subjects"][subject_key] = "could_not_parse_behavior_id"
         return []
 
-    row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
-        if meta is not None else pd.DataFrame()
-
+    row_meta = utils.find_metadata_for_behavior(meta, behavior_id) if meta is not None else pd.DataFrame()
     if row_meta.empty:
-        run_log["excluded_subjects"][subject_key] = \
-            f"behavior_id '{behavior_id}' not found in metadata"
+        run_log["excluded_subjects"][subject_key] = f"behavior_id '{behavior_id}' not found in metadata"
         return []
 
-    row         = row_meta.iloc[0]
-    animal_id   = row.get("animal_id", behavior_id)
-    cohort_id   = row.get("cohort_id", None)
-    treatment   = utils.normalize_treatment(
-        row.get("treatment_group", "Unknown"), cfg["treatment_lookup"]
-    )
-    sex         = utils.normalize_sex(row.get("sex", None))
+    row = row_meta.iloc[0]
+    animal_id = row.get("animal_id", behavior_id)
+    cohort_id = row.get("cohort_id", None)
+    treatment = utils.normalize_treatment(row.get("treatment_group", "Unknown"), cfg["treatment_lookup"])
+    sex = utils.normalize_sex(row.get("sex", None))
 
-    # --- Treatment filtering ---
-    # Only treatments defined in TREATMENT_ALIASES (runner.py) are valid.
-    # Subjects whose treatment maps to something outside the canonical list
-    # are automatically excluded here.
     canonical = cfg["canonical_groups"]
-    include   = cfg.get("include_treatments")  # None = all canonical groups
+    include = cfg.get("include_treatments")
 
     if treatment not in canonical:
-        run_log["excluded_subjects"][subject_key] = \
-            f"treatment '{treatment}' not in canonical groups {canonical}"
+        run_log["excluded_subjects"][subject_key] = f"treatment '{treatment}' not in canonical groups {canonical}"
         return []
 
     if include is not None and treatment not in include:
-        run_log["excluded_subjects"][subject_key] = \
-            f"treatment '{treatment}' not in INCLUDE_TREATMENTS {include}"
+        run_log["excluded_subjects"][subject_key] = f"treatment '{treatment}' not in INCLUDE_TREATMENTS {include}"
         return []
 
     if behavior_id in cfg.get("exclude_behavior_ids", []):
-        run_log["excluded_subjects"][subject_key] = \
-            "explicitly excluded via EXCLUDE_BEHAVIOR_IDS"
+        run_log["excluded_subjects"][subject_key] = "explicitly excluded via EXCLUDE_BEHAVIOR_IDS"
         return []
 
-    # --- Load CSV ---
     df = utils.load_csv(csv_path)
     subject_log = {"columns_used": {}, "skipped_analyses": [], "warnings": []}
 
@@ -211,8 +228,6 @@ def _process_file(csv_path: Path, meta: pd.DataFrame, day_dir: Path,
 
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
 
-    # --- Detect CS+ trials (shared logic with platform_analysis.py,
-    #     controlled by CS_DETECTION_MODE in runner.py) ---
     trials, _, cs_source = utils.detect_trials(df, time_col, cfg)
     subject_log["columns_used"]["CS+_detection"] = cs_source
 
@@ -222,22 +237,15 @@ def _process_file(csv_path: Path, meta: pd.DataFrame, day_dir: Path,
         run_log["subject_logs"][subject_key] = subject_log
         return []
 
-    # --- Detect US windows (Mode A or Mode B) ---
     if cfg["use_shocker_column"]:
-        # Mode A: use Shocker active column, clipped to CS+ windows
         us_windows, us_source = _get_us_windows_mode_a(df, time_col, cs_trials)
         if us_windows is None:
-            subject_log["skipped_analyses"].append(
-                f"Mode A selected but: {us_source}"
-            )
+            subject_log["skipped_analyses"].append(f"Mode A selected but: {us_source}")
             run_log["subject_logs"][subject_key] = subject_log
             run_log["excluded_subjects"][subject_key] = us_source
             return []
     else:
-        # Mode B: last US_DURATION_S seconds of each CS+ trial
-        us_windows, us_source = _get_us_windows_mode_b(
-            cs_trials, cfg["us_duration_s"]
-        )
+        us_windows, us_source = _get_us_windows_mode_b(cs_trials, cfg["us_duration_s"])
 
     subject_log["columns_used"]["US_detection"] = us_source
 
@@ -246,33 +254,32 @@ def _process_file(csv_path: Path, meta: pd.DataFrame, day_dir: Path,
         run_log["subject_logs"][subject_key] = subject_log
         return []
 
-    # --- Compute platform % during each US window ---
-    t    = df[time_col].astype(float).to_numpy()
-    p    = df["in_platform"].fillna(0).astype(float).to_numpy()
+    t = df[time_col].astype(float).to_numpy()
+    p = df["in_platform"].fillna(0).astype(float).to_numpy()
     day, context, session = utils.parse_folder_bits(day_dir.name)
 
     rows = []
     for w in us_windows:
-        dur    = max(0.0, w["end"] - w["start"])
+        dur = max(0.0, w["end"] - w["start"])
         plat_s = utils.integrate_binary(t, p, w["start"], w["end"]) if dur > 0 else 0.0
         plat_pct = 100.0 * plat_s / dur if dur > 0 else 0.0
         rows.append({
-            "animal_id":              animal_id,
-            "behavior_id":            behavior_id,
-            "cohort_id":              cohort_id,
-            "treatment_group":        treatment,
-            "sex":                    sex,
-            "test_date":              test_date,
-            "day":                    day,
-            "context":                context,
-            "session_label":          session,
-            "_day_folder":            day_dir.name,
-            "_source_csv":            csv_path.name,
-            "us_number":              w["trial_index"],
-            "us_start_s":             w["start"],
-            "us_end_s":               w["end"],
-            "platform_time_s":        plat_s,
-            "platform_pct":           plat_pct,
+            "animal_id": animal_id,
+            "behavior_id": behavior_id,
+            "cohort_id": cohort_id,
+            "treatment_group": treatment,
+            "sex": sex,
+            "test_date": test_date,
+            "day": day,
+            "context": context,
+            "session_label": session,
+            "_day_folder": day_dir.name,
+            "_source_csv": csv_path.name,
+            "us_number": w["trial_index"],
+            "us_start_s": w["start"],
+            "us_end_s": w["end"],
+            "platform_time_s": plat_s,
+            "platform_pct": plat_pct,
             "platform_pct_above_chance": plat_pct - cfg["us_chance_baseline_pct"],
         })
 
@@ -284,22 +291,79 @@ def _process_file(csv_path: Path, meta: pd.DataFrame, day_dir: Path,
 # Data collection
 # =============================================================================
 
-def _collect_all(cfg: dict, meta: pd.DataFrame, run_log: dict) -> pd.DataFrame:
-    behaviordata = cfg["behaviordata"]
-    suffix       = cfg["csv_suffix"]
+def _collect_day(day_dir: Path, meta: pd.DataFrame, cfg: dict, run_log: dict) -> pd.DataFrame:
+    suffix = cfg["csv_suffix"]
 
-    # US-locked analysis reads raw session CSVs from top-level day folders,
-    # the same as eee_analysis.py (raw signal needed for both modes).
     all_rows = []
-    for day_dir in utils.find_session_dirs(behaviordata):
-        csvs = sorted(
-            day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv")
-        )
-        for csv_path in csvs:
-            rows = _process_file(csv_path, meta, day_dir, cfg, run_log)
-            all_rows.extend(rows)
+    csvs = sorted(day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
+    for csv_path in csvs:
+        rows = _process_file(csv_path, meta, day_dir, cfg, run_log)
+        all_rows.extend(rows)
 
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
+
+
+# =============================================================================
+# Duplicate-ID warning helper
+# =============================================================================
+
+def _duplicate_animal_id_warning(df: pd.DataFrame) -> str | None:
+    """
+    Detect whether the same animal_id appears in more than one cohort within
+    the same day/treatment panel.
+    """
+    if df.empty or "cohort_id" not in df.columns or "animal_id" not in df.columns:
+        return None
+
+    tmp = df[["cohort_id", "animal_id"]].drop_duplicates().copy()
+    dupes = (
+        tmp.groupby("animal_id", dropna=False)["cohort_id"]
+        .nunique(dropna=False)
+    )
+    bad = dupes[dupes > 1]
+    if bad.empty:
+        return None
+
+    ids = ", ".join(map(str, bad.index.tolist()))
+    return (
+        "Duplicate animal_id values appear across cohorts in this panel: "
+        f"{ids}. These rows can be merged and averaged during pivoting. "
+        "Recommended fix: make animal IDs globally unique across cohorts, or "
+        "switch the plot labels to a composite like cohort_id + '_' + animal_id."
+    )
+
+
+def _apply_plot_trial_caps(df: pd.DataFrame, cfg: dict) -> pd.DataFrame:
+    """
+    Limit plotting / Prism data to the runner-defined CS trial cap.
+
+    This preserves the raw concatenated CSVs, but prevents figures and Prism
+    tables from showing more than the configured number of US windows per
+    subject per day.
+    """
+    if df.empty:
+        return df
+
+    cap = cfg.get("cs_trial_cap")
+    if not cap:
+        return df
+
+    group_cols = []
+    for col in ("_day_folder", "cohort_id", "animal_id"):
+        if col in df.columns:
+            group_cols.append(col)
+
+    if not group_cols:
+        return df
+
+    sort_cols = [c for c in ("_day_folder", "cohort_id", "animal_id", "us_number", "_source_csv") if c in df.columns]
+    capped = (
+        df.sort_values(sort_cols)
+          .groupby(group_cols, dropna=False, group_keys=False)
+          .head(int(cap))
+          .copy()
+    )
+    return capped
 
 
 # =============================================================================
@@ -307,45 +371,52 @@ def _collect_all(cfg: dict, meta: pd.DataFrame, run_log: dict) -> pd.DataFrame:
 # =============================================================================
 
 def _make_heatmap(df: pd.DataFrame, treatment: str, out_dir: Path,
-                  cfg: dict, cohort_label: str = "all"):
+                  cfg: dict, label_suffix: str = "", row_order=None,
+                  fig=None, ax=None, show_cbar=True):
     """
-    One heatmap SVG per treatment group (and optionally per cohort).
+    One heatmap SVG per treatment group or one panel inside a tiled figure.
     X-axis = US number (= CS+ trial index; labeled 'US#' because we report
     the unconditioned stimulus window).
-    Y-axis = one row per animal.
+    Y-axis = one row per subject.
     Sort order controlled by HEATMAP_SORT in runner.py.
     """
     if df.empty:
-        return
+        return None, None, None
 
     baseline = cfg["us_chance_baseline_pct"]
-    sort_mode = cfg.get("heatmap_sort", "response") # Change how heatmap sorts subjects
+    sort_mode = cfg.get("heatmap_sort", "response")
 
-    # Pivot: rows=animal, cols=US number
+    row_col = "animal_id"
+
     pivot = df.pivot_table(
-        index="animal_id",
+        index=row_col,
         columns="us_number",
         values="platform_pct_above_chance",
         aggfunc="mean",
     )
 
-    if sort_mode == "response":
-        order = pivot.mean(axis=1).sort_values(ascending=False).index
+    if row_order is None:
+        if sort_mode == "response":
+            order = pivot.mean(axis=1).sort_values(ascending=False).index.tolist()
+        else:
+            order = sorted(pivot.index.tolist())
     else:
-        # Alphanumeric sort keeps animals in the same row across sessions
-        order = sorted(pivot.index)
+        order = list(row_order)
 
-    pivot = pivot.loc[order]
+    pivot = pivot.reindex(order)
 
-    max_us   = int(pivot.columns.max()) if len(pivot.columns) else 1
-    fig_w    = max(6, max_us * 0.5)
-    fig_h    = max(3, len(pivot) * 0.5)
-    fig, ax  = plt.subplots(figsize=(fig_w, fig_h))
-
+    max_us = int(pivot.columns.max()) if len(pivot.columns) else 1
     vmax = 100.0 - baseline
     vmin = -baseline
 
-    sns.heatmap(
+    created_fig = False
+    if fig is None or ax is None:
+        fig_w = max(6, max_us * 0.5)
+        fig_h = max(3, max(3, len(pivot) * 0.5))
+        fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+        created_fig = True
+
+    hm = sns.heatmap(
         pivot,
         cmap="coolwarm_r",
         vmin=vmin,
@@ -353,36 +424,135 @@ def _make_heatmap(df: pd.DataFrame, treatment: str, out_dir: Path,
         center=0,
         square=True,
         ax=ax,
-        cbar_kws={"label": "% platform time during US (above chance)"},
+        cbar=show_cbar,
+        cbar_kws={"label": "% platform time during US\n(above chance)"} if show_cbar else None,
     )
 
     ax.set_xticks(np.arange(max_us) + 0.5)
     ax.set_xticklabels([f"US{i}" for i in range(1, max_us + 1)], rotation=45)
     ax.set_xlabel("US number")
-    ax.set_ylabel("Animal (sorted by response)" if sort_mode == "response"
-                  else "Animal (alphabetical)")
+    ax.set_ylabel("Subject (sorted by response)" if sort_mode == "response" else "Subject (alphabetical)")
+
     title = f"{treatment}"
-    if cohort_label != "all":
-        title += f" — cohort {cohort_label}"
+    if label_suffix:
+        title += f" — {label_suffix}"
     ax.set_title(title)
 
-    plt.tight_layout()
-    tag = f"us_locked_heatmap_{treatment}"
-    if cohort_label != "all":
-        tag += f"_cohort{cohort_label}"
-    utils.save_fig(fig, out_dir / f"{tag}.svg")
+    return fig, ax, hm
+
+
+# =============================================================================
+# Combined tiled figure
+# =============================================================================
+
+def _make_tiled_treatment_figure(df_trt: pd.DataFrame, treatment: str, out_dir: Path,
+                                 cfg: dict):
+    """
+    Create one figure per treatment, with session days tiled left-to-right.
+    Each day panel contains all subjects for that day across all cohorts.
+    """
+    if df_trt.empty:
+        return
+
+    df_plot = _apply_plot_trial_caps(df_trt, cfg)
+    if df_plot.empty:
+        return
+
+    days = sorted(df_plot["_day_folder"].dropna().unique().tolist(), key=utils.day_sort_key)
+    if not days:
+        return
+
+    sort_mode = cfg.get("heatmap_sort", "response")
+    if sort_mode == "response":
+        row_order = (
+            df_plot.groupby("animal_id", dropna=False)["platform_pct_above_chance"]
+            .mean()
+            .sort_values(ascending=False)
+            .index.tolist()
+        )
+    else:
+        row_order = sorted(df_plot["animal_id"].dropna().astype(str).unique().tolist())
+
+    max_us = int(df_plot["us_number"].max()) if not df_plot["us_number"].empty else 1
+    n_days = len(days)
+    fig_w = max(4.5 * n_days, 6)
+    fig_h = max(4, len(row_order) * 0.35)
+    fig, axes = plt.subplots(
+        1,
+        n_days,
+        figsize=(fig_w, fig_h),
+        squeeze=False,
+        gridspec_kw={"wspace": 0.05},
+    )
+    axes = axes[0]
+
+    vmax = 100.0 - cfg["us_chance_baseline_pct"]
+    vmin = -cfg["us_chance_baseline_pct"]
+    cmap = plt.get_cmap("coolwarm_r")
+    norm = Normalize(vmin=vmin, vmax=vmax)
+
+    last_mappable = None
+    for i, day in enumerate(days):
+        ax = axes[i]
+        df_day = df_plot[df_plot["_day_folder"] == day].copy()
+
+        warn = _duplicate_animal_id_warning(df_day)
+        if warn:
+            print(f"[warn] {treatment} / {day}: {warn}")
+
+        pivot = df_day.pivot_table(
+            index="animal_id",
+            columns="us_number",
+            values="platform_pct_above_chance",
+            aggfunc="mean",
+        ).reindex(row_order)
+
+        sns.heatmap(
+            pivot,
+            cmap=cmap,
+            vmin=vmin,
+            vmax=vmax,
+            center=0,
+            square=False,
+            ax=ax,
+            cbar=False,
+        )
+
+        ax.set_title(day)
+        ax.set_xlabel("US number")
+        if i == 0:
+            ax.set_ylabel("Subject (sorted by response)" if sort_mode == "response" else "Subject (alphabetical)")
+        else:
+            ax.set_ylabel("")
+            ax.tick_params(axis="y", labelleft=False)
+
+        ax.set_xticks(np.arange(max_us) + 0.5)
+        ax.set_xticklabels([f"US{i}" for i in range(1, max_us + 1)], rotation=45)
+        last_mappable = ScalarMappable(norm=norm, cmap=cmap)
+        last_mappable.set_array([])
+
+    fig.suptitle(f"{treatment} — US-locked platform time", y=1.02)
+    fig.tight_layout()
+    fig.subplots_adjust(wspace=0.05, top=0.88, right=0.94)
+
+    cbar = fig.colorbar(last_mappable, ax=axes.tolist(), shrink=0.85, pad=0.015)
+    cbar.set_label("% platform time during US\n(above chance)")
+
+    trt_dir = out_dir / treatment
+    trt_dir.mkdir(parents=True, exist_ok=True)
+    utils.save_fig(fig, trt_dir / f"us_locked_heatmap_{treatment}_tiled.svg")
 
 
 # =============================================================================
 # Prism export
 # =============================================================================
 
-def _prism_export(df: pd.DataFrame, out_dir: Path, tag: str):
+def _prism_export(df: pd.DataFrame, out_dir: Path, tag: str, subject_col: str = "animal_id"):
     """
-    Wide-format Excel: one sheet per treatment × day.
-    Rows = US number, columns = animal_id.
+    Wide-format Excel: one sheet per treatment x day.
+    Rows = US number, columns = subject ID.
     """
-    df  = df.sort_values(["treatment_group", "_day_folder", "us_number", "animal_id"])
+    df = df.sort_values(["treatment_group", "_day_folder", "us_number", subject_col])
     groups = df[["treatment_group", "_day_folder"]].drop_duplicates()
     out_path = out_dir / f"{tag}_prism_ready.xlsx"
 
@@ -390,15 +560,15 @@ def _prism_export(df: pd.DataFrame, out_dir: Path, tag: str):
         for _, row in groups.iterrows():
             subset = df[
                 (df["treatment_group"] == row["treatment_group"]) &
-                (df["_day_folder"]     == row["_day_folder"])
+                (df["_day_folder"] == row["_day_folder"])
             ]
             wide = subset.pivot_table(
                 index="us_number",
-                columns="animal_id",
+                columns=subject_col,
                 values="platform_pct_above_chance",
                 aggfunc="mean",
             ).sort_index()
-            wide.columns.name = "animal_id"
+            wide.columns.name = subject_col
             sheet = f"{row['treatment_group']}_{row['_day_folder']}"[:31]
             wide.to_excel(writer, sheet_name=sheet)
 
@@ -417,10 +587,7 @@ def _shock_avoidance(df: pd.DataFrame, out_dir: Path, tag: str):
     """
     avoided = df[df["platform_pct"] >= 100.0].copy()
     summary = (
-        avoided.groupby(
-            ["treatment_group", "cohort_id", "animal_id", "_day_folder"],
-            dropna=False, as_index=False
-        )
+        avoided.groupby(["treatment_group", "cohort_id", "animal_id", "_day_folder"], dropna=False, as_index=False)
         .agg(shocks_avoided=("us_number", "count"))
     )
     out_path = out_dir / f"{tag}_shock_avoidance.csv"
@@ -454,8 +621,8 @@ def _write_run_report(out_dir: Path, cfg: dict, run_log: dict):
     lines.append("--- Runner settings ---")
     settings_keys = [
         "use_shocker_column", "us_duration_s", "us_chance_baseline_pct",
-        "include_treatments", "exclude_behavior_ids", "separate_by_cohort",
-        "heatmap_sort", "prism_export", "cs_trial_cap",
+        "include_treatments", "exclude_behavior_ids", "heatmap_sort",
+        "prism_export", "cs_trial_cap",
     ]
     for k in settings_keys:
         lines.append(f"  {k:<30} {cfg.get(k)}")
@@ -501,70 +668,100 @@ def _write_run_report(out_dir: Path, cfg: dict, run_log: dict):
 # =============================================================================
 
 def run(cfg: dict):
-    behaviordata = cfg["behaviordata"]
-    out_dir      = behaviordata / "US locked platform time"
-    out_dir.mkdir(parents=True, exist_ok=True)
+    """
+    Per-session outputs are written inside each day folder:
+      BehaviorData/<day folder>/Analysis/US_lock_plttime/<treatment folder>/<plot>
 
-    # Initialise run log (populated throughout processing)
-    run_log = {
-        "timestamp":          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "python_version":     sys.version,
-        "excluded_subjects":  {},
-        "subject_logs":       {},
-        "included_treatments": [],
-    }
+    Multi-cohort combined outputs are written to:
+      <ANALYSIS_OUTPUT_DIR>/US_lock_plttime/<treatment folder>/<plot>
+    where each figure contains all session days tiled left-to-right.
+    """
+    combined_root = Path(cfg["analysis_out"]) / "US_lock_plttime"
+    combined_root.mkdir(parents=True, exist_ok=True)
 
-    meta = utils.load_metadata(behaviordata)
+    combined_rows = []
 
-    print("  Collecting US-locked platform data across all session days...")
-    df = _collect_all(cfg, meta, run_log)
+    for bd in cfg["behaviordata_dirs"]:
+        bd_cfg = {**cfg, "behaviordata": bd}
+        meta = utils.load_metadata(bd)
 
-    if df.empty:
-        print("  [warn] No US-locked data found. Skipping US-locked analysis.")
-        _write_run_report(out_dir, cfg, run_log)
+        for day_dir in utils.find_session_dirs(bd):
+            run_log = {
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "python_version": sys.version,
+                "excluded_subjects": {},
+                "subject_logs": {},
+                "included_treatments": [],
+            }
+
+            print(f"  Collecting US-locked data from: {day_dir.name}")
+            df_day = _collect_day(day_dir, meta, bd_cfg, run_log)
+
+            day_out = day_dir / "Analysis" / "US_lock_plttime"
+            day_out.mkdir(parents=True, exist_ok=True)
+
+            if df_day.empty:
+                print(f"  [warn] No US-locked data found in {day_dir.name}. Skipping.")
+                continue
+
+            df_day.to_csv(day_out / "us_locked_all_days_concat.csv", index=False)
+            print(f"  [ok] Session CSV saved: {day_out / 'us_locked_all_days_concat.csv'}")
+
+            run_log["included_treatments"] = df_day["treatment_group"].dropna().unique().tolist()
+            _write_run_report(day_out, bd_cfg, run_log)
+
+            for trt in cfg["canonical_groups"]:
+                include = cfg.get("include_treatments")
+                if include is not None and trt not in include:
+                    continue
+
+                df_trt = df_day[df_day["treatment_group"] == trt]
+                if df_trt.empty:
+                    continue
+
+                trt_dir = day_out / trt
+                trt_dir.mkdir(parents=True, exist_ok=True)
+
+                df_trt_plot = _apply_plot_trial_caps(df_trt, bd_cfg)
+
+                _shock_avoidance(df_trt, trt_dir, trt)
+
+                fig, _, _ = _make_heatmap(
+                    df_trt_plot,
+                    trt,
+                    trt_dir,
+                    bd_cfg,
+                    label_suffix=day_dir.name,
+                )
+                if fig is not None:
+                    utils.save_fig(fig, trt_dir / f"us_locked_heatmap_{trt}.svg")
+
+                if cfg.get("prism_export"):
+                    _prism_export(df_trt_plot, trt_dir, trt)
+
+            combined_rows.append(df_day.assign(_behaviordata=bd.name))
+
+    if not combined_rows:
+        print("  [warn] No US-locked data found across any BehaviorData directory.")
         return
 
-    df.to_csv(out_dir / "us_locked_all_days_concat.csv", index=False)
-    print("  [ok] Concatenated CSV saved.")
+    df_all = pd.concat(combined_rows, ignore_index=True)
+    df_all.to_csv(combined_root / "us_locked_all_days_concat.csv", index=False)
+    print(f"  [ok] Combined CSV saved: {combined_root / 'us_locked_all_days_concat.csv'}")
 
-    treatments = df["treatment_group"].dropna().unique().tolist()
-    run_log["included_treatments"] = treatments
-
-    # --- Per-treatment outputs ---
     for trt in cfg["canonical_groups"]:
         include = cfg.get("include_treatments")
         if include is not None and trt not in include:
             continue
 
-        df_trt = df[df["treatment_group"] == trt]
+        df_trt = df_all[df_all["treatment_group"] == trt]
         if df_trt.empty:
             continue
 
-        trt_dir = out_dir / trt
-        trt_dir.mkdir(exist_ok=True)
+        _make_tiled_treatment_figure(df_trt, trt, combined_root, cfg)
 
-        # Shock avoidance
-        _shock_avoidance(df_trt, trt_dir, trt)
-
-        # Heatmap (all cohorts combined)
-        _make_heatmap(df_trt, trt, trt_dir, cfg, cohort_label="all")
-
-        # Per-cohort heatmaps and outputs
-        if cfg.get("separate_by_cohort") and "cohort_id" in df_trt.columns:
-            for cohort in sorted(df_trt["cohort_id"].dropna().unique()):
-                df_cohort = df_trt[df_trt["cohort_id"] == cohort]
-                cohort_dir = trt_dir / f"cohort_{cohort}"
-                cohort_dir.mkdir(exist_ok=True)
-                _make_heatmap(df_cohort, trt, cohort_dir, cfg,
-                              cohort_label=str(cohort))
-                _shock_avoidance(df_cohort, cohort_dir, f"{trt}_cohort{cohort}")
-                if cfg.get("prism_export"):
-                    _prism_export(df_cohort, cohort_dir,
-                                  f"{trt}_cohort{cohort}")
-
-        # Prism export (combined cohorts)
-        if cfg.get("prism_export"):
-            _prism_export(df_trt, trt_dir, trt)
-
-    _write_run_report(out_dir, cfg, run_log)
     print("  US-locked analysis complete.")
+
+
+if __name__ == "__main__":
+    raise SystemExit("Run this module through runner.py")

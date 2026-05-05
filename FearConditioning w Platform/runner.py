@@ -4,167 +4,203 @@ runner.py
 ---------
 START HERE. This is the only file you need to edit to run the pipeline.
 
-Set your directory, toggle which analyses you want, configure your treatment
+Set your directories, toggle which analyses you want, configure your treatment
 groups and colors, then run this file in Spyder (press play).
 """
 
 from pathlib import Path
 from utils import build_treatment_normalizer
 
-# =============================================================================
-# REQUIRED: Data directory
-# =============================================================================
 
-BEHAVIORDATA_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData"
-
-# =============================================================================
-# TREATMENT GROUP CONFIGURATION
-# =============================================================================
-# Define your canonical group names and all aliases that might appear in your
-# data files or metadata spreadsheet. Matching is case-insensitive.
+# ── Data directories ─────────────────────────────────────────────────────────
 #
-# The FIRST key is treated as the control group for ordering/color purposes.
+# List every BehaviorData folder you want to include. Each folder must contain
+# its own animals_metadata.xlsx with a cohort_id column. If cohort_id is
+# absent, the folder name is used as the cohort label automatically.
+#
+# Use raw strings (the r prefix) to avoid issues with backslashes on Windows.
+
+BEHAVIORDATA_DIRS = [
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData",
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 2\BehaviorData",
+]
+
+# Top-level folder where combined across-cohort outputs are written.
+# Per-session outputs are always written inside their own BehaviorData folder.
+# Cohort-specific across-session outputs go to:
+#   <BehaviorData>/<cohort_id>/Analysis/<subfolder>/
+ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis"
+
+
+# ── Treatment group configuration ────────────────────────────────────────────
+#
+# Define your canonical group names and every alias that might appear in your
+# metadata spreadsheet. Matching is case-insensitive.
+# The FIRST key is treated as the control group for figure ordering.
 
 TREATMENT_ALIASES = {
     "control": ["ctrl", "cntrl", "control", "Control", "CTRL"],
     "ELS":     ["ELS", "els", "LBN", "lbn"],
 }
 
-# Colors for each canonical treatment label (must match keys above exactly).
+# Hex color for each canonical treatment label (keys must match above exactly).
+# Female colors and unknown-sex colors are derived automatically as lighter
+# tints — you do not need to specify them separately.
 TREATMENT_COLORS = {
     "control": "#0F52BA",
     "ELS":     "#EC5800",
 }
 
-# =============================================================================
-# ANALYSIS TOGGLES
-# =============================================================================
+
+# ── Analysis toggles ─────────────────────────────────────────────────────────
+#
 # Set to True to run, False to skip.
 
-RUN_FREEZING        = True   # % time freezing + freezing bouts (if enabled below)
-RUN_PLATFORM        = True   # % time on platform + latency to platform (if enabled below)
-RUN_EEE             = True   # Evade / Escape / Endure shock outcomes
-RUN_US_LOCKED       = True   # % platform time locked to shock delivery window
+RUN_SANITY_CHECK    = True     # tracking coverage + IQR outliers + trial window consistency
+RUN_FREEZING        = True     # % time freezing + freezing bouts (if enabled below)
+RUN_PLATFORM        = False    # % time on platform + latency to platform (if enabled below)
+RUN_EEE             = False    # Evade / Escape / Endure shock outcome classification
+RUN_US_LOCKED       = False    # % platform time locked to the shock delivery window
 
-# =============================================================================
-# CS+ / CS- TRIAL DETECTION
-# =============================================================================
+
+# ── CS+ / CS- trial detection ────────────────────────────────────────────────
+#
 # Controls how CS+ and CS- trial boundaries are detected across ALL analyses
-# (freezing, platform, EEE, US-locked). The column availability is a property
-# of the AnyMaze export configuration and is the same for all analyses on the
-# same dataset.
+# (freezing, platform, EEE, US-locked). The same setting applies uniformly
+# because column availability is a property of the AnyMaze export, not of
+# the individual analysis.
 #
 # "ttl"         — use CS+/CS- ON/OFF activated columns (brief TTL pulses).
-# "tone_status" — use continuous tone-status columns (1 while tone is on).
+# "tone_status" — use continuous tone-status columns (value = 1 while tone
+#                 is playing, 0 otherwise). More reliable when TTL pulses are
+#                 brief or inconsistent across recording boxes.
 # "auto"        — try tone_status first; fall back to TTL if not found.
-#                 Recommended if you are unsure which columns are present.
+#                 Recommended when you are unsure which columns are present,
+#                 or when your dataset mixes export configurations.
+
 CS_DETECTION_MODE = "tone_status"
 
 # Column name patterns for tone-status detection (used when mode is
 # "tone_status" or "auto"). Write them in any natural form — they are
 # normalised before matching, so "CS+ tone status", "csplus_tone_status",
-# and "CS plus tone status" all resolve identically. Partial/flexible matching
-# is used, so the string just needs to appear within the column name.
-# Change these if your AnyMaze export uses different column names.
+# and "CS plus tone status" all resolve identically. Flexible substring
+# matching is used, so the string just needs to appear within the column name.
+# Change these only if your AnyMaze export uses different column names.
 TONE_STATUS_COL_CSPLUS  = "cs plus tone status"
 TONE_STATUS_COL_CSMINUS = "cs minus tone status"
 
-# =============================================================================
-# TRIAL CAPS
-# =============================================================================
-# Maximum number of trials per animal per day used in figures.
-# Trials beyond these limits are excluded from plots (but kept in raw CSVs).
 
-CS_TRIAL_CAP  = 10
-ITI_TRIAL_CAP = 20
+# ── Trial caps ───────────────────────────────────────────────────────────────
+#
+# Maximum number of trials per animal per day included in figures and Prism
+# tables. Trials beyond these limits are excluded from plots but are kept in
+# the raw concatenated CSVs.
+
+CS_TRIAL_CAP  = 10   # applies to CS+ and CS- trials
+ITI_TRIAL_CAP = 20   # applies to ITI windows
 EEE_TRIAL_CAP = 10   # CS+ trials used for evade/escape/endure classification
 
-# =============================================================================
-# FILE NAMING CONVENTIONS
-# =============================================================================
-# Only files whose stem ends with this string are processed.
-# Set to "" to process all .csv files in a session folder.
 
-CSV_SUFFIX = ""   # e.g. "_fixed" only processes "03-05-26_9C-1_fixed.csv"
+# ── File naming conventions ──────────────────────────────────────────────────
+#
+# Only files whose stem ends with CSV_SUFFIX are processed.
+# Set to "" to process all .csv files found in a session folder.
 
-# Subfolder names inside each day folder where raw CSVs live.
-# Change these only if your folder structure differs.
+CSV_SUFFIX = ""   # e.g. "_fixed" processes only "03-05-26_9C-1_fixed.csv"
+
+# Subfolder names written inside each day folder (per-session outputs).
+# Change these only if your existing folder structure uses different names.
 FREEZING_SUBFOLDER  = "% time freezing"
 PLATFORM_SUBFOLDER  = "% time on platform"
 LATENCY_SUBFOLDER   = "latency to platform"
 EEE_SUBFOLDER       = "Shock outcomes (evade-escape-endure)"
 
-# =============================================================================
-# SUB-ANALYSIS TOGGLES
-# =============================================================================
 
-# --- Freezing sub-analyses ---
-FREEZING_BOUTS      = True   # compute and plot freezing bout counts
-FREEZING_BY_SEX     = False   # generate sex × treatment breakdown figures
-FREEZING_BY_LITTER  = True  # generate litter-level figures (requires litter_id in metadata)
+# ── Freezing sub-analyses ────────────────────────────────────────────────────
 
-# --- Platform sub-analyses ---
-PLATFORM_LATENCY    = True   # compute latency to platform alongside % time on platform
-PLATFORM_BY_SEX     = False   # generate sex × treatment breakdown figures
+FREEZING_BOUTS      = True   # also compute and plot freezing bout counts
+FREEZING_BY_SEX     = False  # generate sex × treatment breakdown figures
+FREEZING_BY_LITTER  = True   # generate litter-level figures
+                              # (requires litter_id column in metadata)
 
-# --- EEE sub-analyses ---
-EEE_BY_SEX          = False   # generate sex × treatment stacked bar figures
 
-# --- US-locked sub-settings ---
+# ── Platform sub-analyses ────────────────────────────────────────────────────
 
-# Mode A (True): detect US window from 'Shocker active' column in AnyMaze CSV,
-#   clipped to within CS+ trial boundaries to exclude stray electronic pulses.
-# Mode B (False): derive US window as last US_DURATION_S seconds of each CS+
-#   trial, using the same detection logic as platform_analysis.py. Works for
-#   all sessions including yoked.
+PLATFORM_LATENCY    = True   # also compute latency to first platform entry
+PLATFORM_BY_SEX     = False  # generate sex × treatment breakdown figures
+
+
+# ── EEE sub-analyses ─────────────────────────────────────────────────────────
+
+EEE_BY_SEX          = False  # generate sex × treatment stacked bar figures
+
+
+# ── US-locked settings ───────────────────────────────────────────────────────
+#
+# Mode A (USE_SHOCKER_COLUMN = True):
+#   Detects US windows from the 'Shocker active' column in AnyMaze CSVs,
+#   clipped to within detected CS+ trial boundaries to exclude stray pulses.
+#
+# Mode B (USE_SHOCKER_COLUMN = False):
+#   Derives the US window as the last US_DURATION_S seconds of each CS+ trial,
+#   using the same trial detection logic as platform_analysis.py. Works for
+#   all sessions including yoked controls.
+
 USE_SHOCKER_COLUMN     = False
+US_DURATION_S          = 2.0    # Mode B only: assumed shock window length (seconds)
 
-US_DURATION_S          = 2.0    # Mode B only: shock window length in seconds
-US_CHANCE_BASELINE_PCT = 16.4   # subtracted from platform_pct for "above chance"
-                                 # (default = 16.4%, chance level for this paradigm)
+US_CHANCE_BASELINE_PCT = 16.4   # Subtracted from platform_pct to give "above chance".
+                                 # Default = 16.4%, the chance level for this paradigm.
 
+# Restrict which treatment groups are processed in the US-locked analysis.
 # Only treatments defined in TREATMENT_ALIASES above are valid.
-# Any subject whose treatment label does not match a canonical group is
-# automatically excluded. Set to None to include all canonical groups, or
-# provide a list to restrict (e.g. ["ELS"] runs only the ELS group).
+# Set to None to include all canonical groups, or provide a list to restrict,
+# e.g. ["ELS"] runs only the ELS group.
 INCLUDE_TREATMENTS     = None
 
-EXCLUDE_BEHAVIOR_IDS   = []     # explicitly skip specific animals, e.g. ["9C-1"]
+# Explicitly skip specific animals by behavior_id, e.g. ["9C-1", "4B"].
+EXCLUDE_BEHAVIOR_IDS   = []
 
-# Separate plots and outputs per cohort (requires cohort_id in metadata).
-# When True, outputs are written per-treatment AND per-treatment x cohort.
-SEPARATE_BY_COHORT     = True
-
+# Controls the row order in US-locked heatmaps.
 # "response"     — sort animals by mean above-chance value (highest on top).
 #                  Useful for visualising the distribution of responders.
 # "alphabetical" — sort by animal_id alphanumerically. Keeps each animal in
-#                  the same row across sessions for direct visual comparison.
+#                  the same row position across sessions for direct comparison.
 HEATMAP_SORT           = "response"
 
-# --- Prism export ---
-PRISM_EXPORT        = True   # export Prism-ready Excel tables for all enabled analyses
 
-# =============================================================================
-# DO NOT EDIT BELOW THIS LINE
-# =============================================================================
+# ── Prism export ─────────────────────────────────────────────────────────────
+#
+# When True, writes wide-format Prism-ready Excel tables for every enabled
+# analysis. Rows = trial index, columns = individual animal IDs.
+
+PRISM_EXPORT        = True
+
+
+# ── DO NOT EDIT BELOW THIS LINE ──────────────────────────────────────────────
 
 def main():
-    behaviordata = Path(BEHAVIORDATA_DIR)
-    if not behaviordata.exists():
-        raise SystemExit(f"[error] BehaviorData directory not found:\n  {behaviordata}")
+    behaviordata_dirs = [Path(p) for p in BEHAVIORDATA_DIRS]
+    analysis_out      = Path(ANALYSIS_OUTPUT_DIR)
 
-    meta_path = behaviordata / "animals_metadata.xlsx"
-    if not meta_path.exists():
-        print(f"[warn] animals_metadata.xlsx not found at {meta_path}.\n"
-              "       Sex and litter sub-analyses will be skipped.")
+    for bd in behaviordata_dirs:
+        if not bd.exists():
+            raise SystemExit(f"[error] BehaviorData directory not found:\n  {bd}")
 
-    # Build the flat alias lookup once; pass it to every analysis module.
+    analysis_out.mkdir(parents=True, exist_ok=True)
+
+    for bd in behaviordata_dirs:
+        meta_path = bd / "animals_metadata.xlsx"
+        if not meta_path.exists():
+            print(f"[warn] animals_metadata.xlsx not found at {meta_path}.\n"
+                  "       Sex and litter sub-analyses will be skipped for this folder.")
+
     treatment_lookup = build_treatment_normalizer(TREATMENT_ALIASES)
     control_label    = list(TREATMENT_ALIASES.keys())[0]
 
-    # Bundle all config into a single dict so analysis scripts have one argument.
     cfg = dict(
-        behaviordata            = behaviordata,
+        behaviordata_dirs       = behaviordata_dirs,
+        analysis_out            = analysis_out,
         treatment_lookup        = treatment_lookup,
         treatment_colors        = TREATMENT_COLORS,
         control_label           = control_label,
@@ -189,12 +225,18 @@ def main():
         us_chance_baseline_pct  = US_CHANCE_BASELINE_PCT,
         include_treatments      = INCLUDE_TREATMENTS,
         exclude_behavior_ids    = EXCLUDE_BEHAVIOR_IDS,
-        separate_by_cohort      = SEPARATE_BY_COHORT,
         heatmap_sort            = HEATMAP_SORT,
         cs_detection_mode       = CS_DETECTION_MODE,
         tone_status_col_csplus  = TONE_STATUS_COL_CSPLUS,
         tone_status_col_csminus = TONE_STATUS_COL_CSMINUS,
     )
+
+    if RUN_SANITY_CHECK:
+        print("\n" + "="*60)
+        print("SANITY CHECKS")
+        print("="*60)
+        from sanity_check import run as run_sanity
+        run_sanity(cfg)
 
     if RUN_FREEZING:
         print("\n" + "="*60)

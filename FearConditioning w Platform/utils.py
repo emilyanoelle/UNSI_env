@@ -10,7 +10,7 @@ belongs in runner.py.
 import re
 import string
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 
 import numpy as np
 import pandas as pd
@@ -24,7 +24,6 @@ from matplotlib.transforms import Affine2D
 # =============================================================================
 
 def norm_colname(c: str) -> str:
-    """Normalize a column name to a consistent lowercase underscore-separated key."""
     c = str(c).strip().lower()
     c = c.replace("\u00a0", " ")
     c = re.sub(r"\s+", " ", c)
@@ -36,7 +35,6 @@ def norm_colname(c: str) -> str:
 
 
 def load_csv(path: Path) -> pd.DataFrame:
-    """Load a CSV with normalized column names."""
     try:
         df = pd.read_csv(path, engine="python")
     except Exception:
@@ -49,22 +47,6 @@ def load_csv(path: Path) -> pd.DataFrame:
 # =============================================================================
 
 def build_treatment_normalizer(alias_map: dict) -> dict:
-    """
-    Build a flat lookup from any alias -> canonical label.
-
-    Parameters
-    ----------
-    alias_map : dict
-        From runner.py TREATMENT_ALIASES. Example:
-        {
-            "control": ["ctrl", "cntrl", "control", "Control"],
-            "ELS":     ["ELS", "els", "LBN", "lbn"],
-        }
-
-    Returns
-    -------
-    dict mapping every alias (lowercased) -> canonical label
-    """
     lookup = {}
     for canonical, aliases in alias_map.items():
         for alias in aliases:
@@ -73,7 +55,6 @@ def build_treatment_normalizer(alias_map: dict) -> dict:
 
 
 def normalize_treatment(value, lookup: dict) -> str:
-    """Map a raw treatment string to its canonical label, or return as-is."""
     if pd.isna(value):
         return "Unknown"
     return lookup.get(str(value).strip().lower(), str(value).strip())
@@ -99,34 +80,23 @@ def normalize_sex(x) -> str:
 # =============================================================================
 
 def parse_folder_bits(folder_name: str) -> tuple:
-    """
-    Parse session folder names into (day, context, session_label).
-
-    Supports:
-        d01_contextA_habituation  ->  ("d01", "contextA", "habituation")
-        Day 1 habituation_2       ->  ("d01", "habituation", "2")
-    """
     s = folder_name.strip()
-
     m = re.match(r"^(d\d{2})_(context[ab])_(.+)$", s, flags=re.IGNORECASE)
     if m:
         return m.group(1).lower(), m.group(2), m.group(3)
-
     m = re.match(r"^Day\s+(\d+)\s+(.+)$", s, flags=re.IGNORECASE)
     if m:
-        day = f"d{int(m.group(1)):02d}"
+        day  = f"d{int(m.group(1)):02d}"
         rest = m.group(2).strip()
         if "_" in rest:
             maybe_ctx, maybe_sess = rest.rsplit("_", 1)
             if maybe_sess.isdigit():
                 return day, maybe_ctx, maybe_sess
         return day, rest, None
-
     return folder_name, None, None
 
 
 def day_sort_key(folder_name: str) -> tuple:
-    """Sort key for session folder names by day number then alphabetically."""
     m = re.match(r"^d(\d{2})_", folder_name, flags=re.IGNORECASE)
     if m:
         return (int(m.group(1)), folder_name.lower())
@@ -134,7 +104,6 @@ def day_sort_key(folder_name: str) -> tuple:
 
 
 def find_session_dirs(behaviordata: Path, pattern: str = r"^d\d{2}_") -> list:
-    """Return sorted list of session directories matching the day-folder pattern."""
     dirs = [
         p for p in behaviordata.iterdir()
         if p.is_dir() and re.search(pattern, p.name, flags=re.IGNORECASE)
@@ -143,13 +112,14 @@ def find_session_dirs(behaviordata: Path, pattern: str = r"^d\d{2}_") -> list:
 
 
 # =============================================================================
-# Metadata loading and flexible behavior ID lookup
+# Metadata loading — supports multiple BehaviorData directories
 # =============================================================================
 
 def load_metadata(behaviordata: Path) -> Optional[pd.DataFrame]:
     """
-    Load animals_metadata.xlsx from the BehaviorData directory.
+    Load animals_metadata.xlsx from a single BehaviorData directory.
     Returns a normalized DataFrame or None if not found.
+    If cohort_id is absent, it is synthesized from the folder name.
     """
     meta_path = behaviordata / "animals_metadata.xlsx"
     if not meta_path.exists():
@@ -163,23 +133,60 @@ def load_metadata(behaviordata: Path) -> Optional[pd.DataFrame]:
         print("[warn] 'behavior_id' column not found in animals_metadata.xlsx.")
         return None
 
+    # Synthesize cohort_id from folder name if not provided
+    if "cohort_id" not in meta.columns:
+        meta["cohort_id"] = behaviordata.name
+        print(f"[info] No cohort_id column found in {meta_path.name}; "
+              f"using folder name '{behaviordata.name}' as cohort_id.")
+
     meta["behavior_id"] = meta["behavior_id"].apply(_normalize_key)
     meta = meta[meta["behavior_id"] != ""].copy()
     return meta
 
 
+def load_metadata_multi(behaviordata_dirs: List[Path]) -> Optional[pd.DataFrame]:
+    """
+    Load and merge animals_metadata.xlsx from multiple BehaviorData directories.
+    Each directory's metadata is tagged with its cohort_id (from the column if
+    present, otherwise synthesized from the folder name).
+    Returns a single merged DataFrame, or None if no metadata was found.
+    """
+    frames = []
+    for bd in behaviordata_dirs:
+        meta = load_metadata(bd)
+        if meta is not None:
+            # Tag each row with the source BehaviorData path so analysis
+            # scripts can route per-session outputs to the right folder.
+            meta["_behaviordata"] = str(bd)
+            frames.append(meta)
+
+    if not frames:
+        return None
+
+    merged = pd.concat(frames, ignore_index=True)
+
+    # Warn on duplicate behavior_ids across cohorts (allowed but worth flagging)
+    dupes = merged[merged.duplicated(subset=["behavior_id"], keep=False)]
+    if not dupes.empty:
+        ids = dupes["behavior_id"].unique().tolist()
+        print(f"[warn] behavior_id values appear in more than one cohort's "
+              f"metadata — ensure they are distinct or results may be mixed up: "
+              f"{ids}")
+
+    return merged
+
+
+# =============================================================================
+# Internal helpers
+# =============================================================================
+
 def _normalize_key(v) -> str:
-    """Normalize a behavior_id to uppercase stripped string."""
     if pd.isna(v):
         return ""
     return str(v).strip().upper()
 
 
 def normalize_behavior_id_for_lookup(bid: str) -> Optional[str]:
-    """
-    Prepare a behavior_id token for metadata lookup.
-    Lowercases, strips punctuation, removes trailing instance counters and '_fixed'.
-    """
     if bid is None:
         return None
     s = str(bid).strip().lower()
@@ -190,10 +197,6 @@ def normalize_behavior_id_for_lookup(bid: str) -> Optional[str]:
 
 
 def extract_behavior_id_token(text: str) -> Optional[str]:
-    """
-    Return the leading behavior-id-like token from a filename fragment.
-    e.g. "10a_(other stuff)" -> "10a", "9C-15_1_fixed" -> "9C-15"
-    """
     if text is None:
         return None
     s = str(text).strip().strip("()[]{}\"'").lstrip("_- ")
@@ -209,35 +212,19 @@ def extract_behavior_id_token(text: str) -> Optional[str]:
 
 
 def parse_filename_bits(csv_path: Path) -> tuple:
-    """
-    Extract (test_date, behavior_id) from filenames like:
-        03-03-26_9C-1_1_fixed.csv  ->  ("03-03-26", "9C-1")
-    """
     stem = csv_path.stem
-    m = re.search(r"(\d{2}-\d{2}-\d{2})", stem)
+    m    = re.search(r"(\d{2}-\d{2}-\d{2})", stem)
     if not m:
         return None, None
-
     date = m.group(1)
     rest = stem[m.end():].lstrip("_ -")
     if not rest:
         return date, None
-
     bid = extract_behavior_id_token(rest)
     return date, bid
 
 
 def find_metadata_for_behavior(meta_df: pd.DataFrame, raw_bid: str) -> pd.DataFrame:
-    """
-    Flexible metadata lookup. Tries multiple normalization strategies in order:
-      1. Exact normalized match
-      2. Alphanumeric-only match
-      3. Base match after stripping trailing -N suffix
-      4. Numeric suffix heuristics
-      5. Token boundary match
-      6. Prefix/suffix fallback
-    Returns a DataFrame slice (may be empty if no match).
-    """
     if raw_bid is None or meta_df is None:
         return pd.DataFrame()
 
@@ -249,30 +236,26 @@ def find_metadata_for_behavior(meta_df: pd.DataFrame, raw_bid: str) -> pd.DataFr
     if not bid_norm:
         return pd.DataFrame()
 
-    meta_beh  = meta_df["behavior_id"].astype(str)
+    meta_beh   = meta_df["behavior_id"].astype(str)
     meta_norm  = meta_beh.str.lower().str.strip()
     meta_clean = meta_norm.str.replace(r"[^a-z0-9]", "", regex=True)
 
-    # 1) exact
     mask = meta_norm == bid_norm
     if mask.any():
         return meta_df[mask]
 
-    # 2) alnum only
     cleaned = re.sub(r"[^a-z0-9]", "", bid_norm)
     if cleaned:
         mask = meta_clean == cleaned
         if mask.any():
             return meta_df[mask]
 
-    # 3) strip trailing -N
     m = re.match(r"(.+?)(-\d+|-[a-z0-9]+)$", bid_norm)
     if m:
         mask = meta_norm == m.group(1)
         if mask.any():
             return meta_df[mask]
 
-    # 4) numeric suffix
     mnum = re.match(r"^0*([0-9]+)([a-z])?$", bid_norm)
     if mnum:
         num, letter = mnum.group(1), (mnum.group(2) or "").lower()
@@ -285,13 +268,11 @@ def find_metadata_for_behavior(meta_df: pd.DataFrame, raw_bid: str) -> pd.DataFr
             if mask.any():
                 return meta_df[mask]
 
-    # 5) token boundary
-    pat = re.compile(r"(^|[-_])" + re.escape(bid_norm) + r"($|[-_])")
+    pat  = re.compile(r"(^|[-_])" + re.escape(bid_norm) + r"($|[-_])")
     mask = meta_norm.apply(lambda s: bool(pat.search(s)))
     if mask.any():
         return meta_df[mask]
 
-    # 6) prefix/suffix fallback
     if cleaned:
         for fn in [meta_clean.str.startswith, meta_clean.str.endswith]:
             mask = fn(cleaned)
@@ -319,7 +300,7 @@ def normalize_trial_type(v: str) -> str:
 
 
 def rising_edges(series: pd.Series) -> np.ndarray:
-    s = series.fillna(0).astype(float)
+    s    = series.fillna(0).astype(float)
     prev = s.shift(1, fill_value=0)
     return ((prev <= 0) & (s > 0)).to_numpy().nonzero()[0]
 
@@ -339,16 +320,9 @@ def clip_interval(start: float, end: float, t_min: float, t_max: float) -> tuple
     return max(start, t_min), min(end, t_max)
 
 
-def detect_trials_from_ttl(df: pd.DataFrame, time_col: str,
-                            csplus_on: Optional[str], csplus_off: Optional[str],
-                            csminus_on: Optional[str], csminus_off: Optional[str],
-                            trial_len_s: float = 30.0,
-                            iti_len_s: float = 60.0) -> tuple:
-    """
-    Detect CS+ and CS- trials from TTL rising edges, then build ITI windows.
-    Returns (trials, itis) — each a list of dicts with keys:
-        type, start, end, trial_index
-    """
+def detect_trials_from_ttl(df, time_col, csplus_on, csplus_off,
+                            csminus_on, csminus_off,
+                            trial_len_s=30.0, iti_len_s=60.0) -> tuple:
     t = df[time_col].astype(float).to_numpy()
     t_min, t_max = float(np.nanmin(t)), float(np.nanmax(t))
     trials = []
@@ -381,19 +355,14 @@ def detect_trials_from_ttl(df: pd.DataFrame, time_col: str,
     return trials, itis
 
 
-def detect_trials_from_tone_status(df: pd.DataFrame, time_col: str,
-                                    csplus_col: str, csminus_col: str,
-                                    iti_len_s: float = 60.0) -> tuple:
-    """
-    Detect trials from contiguous 1-blocks in tone-status columns.
-    Used by PlatformLatency (cohorts with proper tone-status columns).
-    """
+def detect_trials_from_tone_status(df, time_col, csplus_col, csminus_col,
+                                    iti_len_s=60.0) -> tuple:
     t = df[time_col].astype(float).to_numpy()
     t_min, t_max = float(np.nanmin(t)), float(np.nanmax(t))
     trials = []
 
     for col, label in [(csplus_col, "CS+"), (csminus_col, "CS-")]:
-        s = df[col].fillna(0).astype(float).to_numpy()
+        s    = df[col].fillna(0).astype(float).to_numpy()
         prev = np.roll(s, 1); prev[0] = 0
         starts = np.where((prev <= 0) & (s > 0))[0]
         ends   = np.where((prev > 0) & (s <= 0))[0]
@@ -423,57 +392,25 @@ def detect_trials_from_tone_status(df: pd.DataFrame, time_col: str,
 
 
 def detect_trials(df: pd.DataFrame, time_col: str, cfg: dict) -> tuple:
-    """
-    Unified trial-detection entry point used by all analysis scripts.
-
-    Branches on cfg["cs_detection_mode"]:
-
-      "ttl"         — detect from CS+/CS- ON/OFF TTL pulse columns only.
-      "tone_status" — detect from continuous tone-status columns only.
-                      Raises if the columns are not found.
-      "auto"        — try tone_status first; fall back to TTL if the
-                      tone-status columns are absent. This is the default
-                      and is recommended when column availability is uncertain.
-
-    The tone-status column name patterns are taken from:
-      cfg["tone_status_col_csplus"]  (default: "cs plus tone status")
-      cfg["tone_status_col_csminus"] (default: "cs minus tone status")
-    These are set via TONE_STATUS_COL_CSPLUS / TONE_STATUS_COL_CSMINUS in
-    runner.py and support any natural-language form (see find_tone_status_cols).
-
-    Returns
-    -------
-    (trials, itis, source_description)
-        source_description : str describing which columns were used, for
-                             inclusion in run reports and subject logs.
-    """
-    mode           = cfg.get("cs_detection_mode", "auto")
+    mode            = cfg.get("cs_detection_mode", "auto")
     csplus_pattern  = cfg.get("tone_status_col_csplus",  "cs plus tone status")
     csminus_pattern = cfg.get("tone_status_col_csminus", "cs minus tone status")
 
     def _try_tone_status():
-        csplus_col, csminus_col = find_tone_status_cols(
-            df, csplus_pattern, csminus_pattern
-        )
-        trials, itis = detect_trials_from_tone_status(
-            df, time_col, csplus_col, csminus_col
-        )
+        csplus_col, csminus_col = find_tone_status_cols(df, csplus_pattern, csminus_pattern)
+        trials, itis = detect_trials_from_tone_status(df, time_col, csplus_col, csminus_col)
         return trials, itis, f"tone_status ({csplus_col}, {csminus_col})"
 
     def _try_ttl():
         csplus_on, csplus_off, csminus_on, csminus_off = find_ttl_cols(df)
         trials, itis = detect_trials_from_ttl(
-            df, time_col, csplus_on, csplus_off, csminus_on, csminus_off
-        )
+            df, time_col, csplus_on, csplus_off, csminus_on, csminus_off)
         return trials, itis, f"TTL ({csplus_on}, {csminus_on})"
 
     if mode == "tone_status":
         return _try_tone_status()
-
     if mode == "ttl":
         return _try_ttl()
-
-    # "auto": tone_status preferred, TTL as fallback
     try:
         return _try_tone_status()
     except ValueError:
@@ -481,7 +418,6 @@ def detect_trials(df: pd.DataFrame, time_col: str, cfg: dict) -> tuple:
 
 
 def filter_trials(df: pd.DataFrame, cs_cap: int = 10, iti_cap: int = 20) -> pd.DataFrame:
-    """Cap CS+/CS- at cs_cap trials and ITI at iti_cap trials per day/animal."""
     if "_trial_type" not in df.columns and "trial_type" in df.columns:
         df = df.copy()
         df["_trial_type"] = df["trial_type"]
@@ -508,27 +444,20 @@ def filter_trials(df: pd.DataFrame, cs_cap: int = 10, iti_cap: int = 20) -> pd.D
 # Signal integration
 # =============================================================================
 
-def integrate_binary(t: np.ndarray, x: np.ndarray,
-                     start: float, end: float) -> float:
-    """
-    Integrate a binary signal x(t) over [start, end).
-    Returns total seconds where x > 0.
-    """
+def integrate_binary(t, x, start, end) -> float:
     t = np.asarray(t, dtype=float)
     x = np.asarray(x, dtype=float)
     if len(t) < 2 or end <= start:
         return 0.0
-    dt = np.diff(t)
-    dt = np.append(dt, dt[-1])
-    left  = np.maximum(t, start)
-    right = np.minimum(t + dt, end)
+    dt      = np.diff(t)
+    dt      = np.append(dt, dt[-1])
+    left    = np.maximum(t, start)
+    right   = np.minimum(t + dt, end)
     overlap = np.maximum(0.0, right - left)
     return float((overlap * (x > 0).astype(float)).sum())
 
 
-def interval_fraction_on(t: np.ndarray, x: np.ndarray,
-                          start: float, end: float) -> float:
-    """Fraction of time x==1 over [start, end)."""
+def interval_fraction_on(t, x, start, end) -> float:
     denom = integrate_binary(t, np.ones_like(x), start, end)
     if denom < 1e-12:
         return 0.0
@@ -554,57 +483,31 @@ def find_freeze_col(df: pd.DataFrame) -> str:
 
 
 def find_ttl_cols(df: pd.DataFrame) -> tuple:
-    """Find CS+/CS- ON/OFF TTL columns. Returns (csplus_on, csplus_off, csminus_on, csminus_off)."""
     cols = df.columns.tolist()
 
     def like(words):
-        pat = re.compile(r".*".join(re.escape(w) for w in words))
+        pat     = re.compile(r".*".join(re.escape(w) for w in words))
         matches = [c for c in cols if pat.search(c)]
         return matches[0] if matches else None
 
-    csplus_on  = like(["cs", "plus", "on", "activat"]) or like(["csplus", "on"]) or like(["cs", "plus", "on"])
-    csplus_off = like(["cs", "plus", "off", "activat"]) or like(["csplus", "off"]) or like(["cs", "plus", "off"])
+    csplus_on   = like(["cs", "plus", "on", "activat"])  or like(["csplus", "on"])  or like(["cs", "plus", "on"])
+    csplus_off  = like(["cs", "plus", "off", "activat"]) or like(["csplus", "off"]) or like(["cs", "plus", "off"])
     csminus_on  = like(["cs", "minus", "on", "activat"]) or like(["csminus", "on"]) or like(["cs", "minus", "on"])
-    csminus_off = like(["cs", "minus", "off", "activat"]) or like(["csminus", "off"]) or like(["cs", "minus", "off"])
-
+    csminus_off = like(["cs", "minus", "off", "activat"])or like(["csminus", "off"])or like(["cs", "minus", "off"])
     return csplus_on, csplus_off, csminus_on, csminus_off
 
 
 def find_tone_status_cols(df: pd.DataFrame,
                           csplus_pattern:  str = "cs plus tone status",
                           csminus_pattern: str = "cs minus tone status") -> tuple:
-    """
-    Find CS+ and CS- tone-status columns using flexible partial matching.
-
-    The pattern strings are normalised via norm_colname() before matching, so
-    the user can supply them in any natural form:
-        "CS+ tone status", "csplus_tone_status", "CS plus tone status"
-    all resolve to the same normalised root and will match any column whose
-    normalised name contains that root as a substring.
-
-    Parameters
-    ----------
-    df              : DataFrame with normalised column names.
-    csplus_pattern  : Natural-language pattern for the CS+ tone-status column.
-                      Set via TONE_STATUS_COL_CSPLUS in runner.py.
-    csminus_pattern : Natural-language pattern for the CS- tone-status column.
-                      Set via TONE_STATUS_COL_CSMINUS in runner.py.
-
-    Raises ValueError if either column is not found.
-    """
     cols = df.columns.tolist()
 
     def find_one(pattern: str) -> Optional[str]:
-        # Normalise the user-supplied pattern the same way column names are
-        # normalised, so matching is format-agnostic.
-        norm = norm_colname(pattern)
-        # Flexible: match any column whose normalised name contains the pattern
-        # as a contiguous substring (handles minor naming variations).
+        norm    = norm_colname(pattern)
         matches = [c for c in cols if norm in c]
         if matches:
             return matches[0]
-        # Fallback: match columns that contain all tokens of the pattern
-        tokens = norm.split("_")
+        tokens  = norm.split("_")
         matches = [c for c in cols if all(t in c for t in tokens)]
         return matches[0] if matches else None
 
@@ -624,7 +527,7 @@ def find_tone_status_cols(df: pd.DataFrame,
 
 def find_latency_col(df: pd.DataFrame) -> Optional[str]:
     candidates = ["latency_to_platform_s", "latency_to_platform",
-                   "latency_s", "latency", "latency_to_platform__s"]
+                  "latency_s", "latency", "latency_to_platform__s"]
     for c in candidates:
         if c in df.columns:
             return c
@@ -642,46 +545,31 @@ def find_latency_col(df: pd.DataFrame) -> Optional[str]:
 # =============================================================================
 
 def make_sex_markers() -> dict:
-    """Return path markers for male/female symbols."""
     def _marker(char):
         tp = TextPath((0, 0), char, size=1.0, prop=dict(family="DejaVu Sans"))
         bb = tp.get_extents()
         cx, cy = (bb.x0 + bb.x1) / 2.0, (bb.y0 + bb.y1) / 2.0
         return Affine2D().translate(-cx, -cy).transform_path(tp)
-    return {
-        "M":       _marker("♂"),
-        "F":       _marker("♀"),
-        "Unknown": None,
-    }
+    return {"M": _marker("♂"), "F": _marker("♀"), "Unknown": None}
 
 
-SEX_MARKERS = make_sex_markers()  # module-level so it's built once
+SEX_MARKERS = make_sex_markers()
 
 
 def sparse_xticks(ax: plt.Axes, last_trial: int, every: int = 3):
-    """Label every Nth trial tick, leave others blank."""
     ticks = range(1, last_trial + 1)
     ax.set_xticks(ticks)
     ax.set_xticklabels(
-        [str(t) if (t - 1) % every == 0 else "" for t in ticks],
-        fontsize=8,
+        [str(t) if (t - 1) % every == 0 else "" for t in ticks], fontsize=8
     )
 
 
 def build_sex_color_map(treatment_color_map: dict) -> dict:
-    """
-    Derive a sex × treatment color map from the base treatment colors.
-    Male gets the base color; female gets a lighter tint.
-    Unknown gets a grey tint.
-    """
     import matplotlib.colors as mcolors
-
     sex_map = {}
     for trt, base_hex in treatment_color_map.items():
-        base = mcolors.to_rgb(base_hex)
-        # Female: blend 50% toward white
-        female = tuple(min(1.0, c + (1.0 - c) * 0.5) for c in base)
-        # Unknown: blend 70% toward white
+        base    = mcolors.to_rgb(base_hex)
+        female  = tuple(min(1.0, c + (1.0 - c) * 0.5) for c in base)
         unknown = tuple(min(1.0, c + (1.0 - c) * 0.7) for c in base)
         sex_map[(trt, "M")]       = base_hex
         sex_map[(trt, "F")]       = mcolors.to_hex(female)
@@ -691,10 +579,6 @@ def build_sex_color_map(treatment_color_map: dict) -> dict:
 
 def plot_mean_sem(ax: plt.Axes, agg: pd.DataFrame, color=None,
                   label: str = None, marker=None, linestyle: str = "-"):
-    """
-    Plot mean ± SEM from an aggregated DataFrame with columns:
-    trial_index, mean, count, std.
-    """
     if agg.empty:
         return
     if (agg["count"] > 1).any():
