@@ -6,7 +6,7 @@ Edit this file; do not touch the analysis modules.
 
 # ── Paths ──────────────────────────────────────────────────────────────────────
 DATA_ROOT = (
-    r"Z:\NIMH DIRP NSI\Projects\PFC Enkephalin Project\1PortPMA\Behaviors\MOR-FLOX\MOR-FLOX 2025-08\BehaviorData"
+    r"Z:\path\to\your\BehaviorData"
 )
 
 # Set to a folder name (e.g. "VC03") to process only that session; None = all sessions
