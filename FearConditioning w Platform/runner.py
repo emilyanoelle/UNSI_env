@@ -23,15 +23,14 @@ import run_report
 # Use raw strings (the r prefix) to avoid issues with backslashes on Windows.
 
 BEHAVIORDATA_DIRS = [
-    r"Z:\path\to\Cohort1\BehaviorData",
-    r"Z:\path\to\Cohort2\BehaviorData",
+    r"Z:\NIMH DIRP NSI\Personnel Folders\Emilya\fear cond w platform test"
 ]
 
 # Top-level folder where combined across-cohort outputs are written.
 # Per-session outputs are always written inside their own BehaviorData folder.
 # Cohort-specific across-session outputs go to:
 #   <BehaviorData>/<cohort_id>/Analysis/<subfolder>/
-ANALYSIS_OUTPUT_DIR = r"Z:\path\to\combined\Analysis"
+ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Personnel Folders\Emilya\fear cond w platform test\Analysis03"
 
 
 # ── Treatment group configuration ────────────────────────────────────────────
@@ -60,11 +59,12 @@ TREATMENT_COLORS = {
 #
 # Set to True to run, False to skip.
 
-RUN_SANITY_CHECK    = True     # tracking coverage + IQR outliers + trial window consistency
-RUN_FREEZING        = True     # % time freezing + freezing bouts (if enabled below)
-RUN_PLATFORM        = True    # % time on platform + latency to platform (if enabled below)
-RUN_EEE             = True    # Evade / Escape / Endure shock outcome classification
-RUN_US_LOCKED       = True    # % platform time locked to the shock delivery window
+RUN_SANITY_CHECK    = False     # tracking coverage + IQR outliers + trial window consistency
+RUN_FREEZING        = False     # % time freezing + freezing bouts (if enabled below)
+RUN_PLATFORM        = False    # % time on platform + latency to platform (if enabled below)
+RUN_EEE             = False    # Evade / Escape / Endure shock outcome classification
+RUN_US_LOCKED       = False    # % platform time locked to the shock delivery window
+RUN_SPEED           = True     # CS-locked speed analysis
 
 
 # ── CS+ / CS- trial detection ────────────────────────────────────────────────
@@ -163,6 +163,10 @@ COLUMN_ALIASES = {
     "shocker_active": [
         "Shocker active",
     ],
+    "speed": [
+        "Speed (m/s)",
+        "Speed"
+    ]
 }
 
 
@@ -244,6 +248,16 @@ EXCLUDE_BEHAVIOR_IDS   = []
 #                  the same row position across sessions for direct comparison.
 HEATMAP_SORT           = "alphabetical"
 
+# ── Speed Analysis settings ───────────────────────────────────────────────────────────
+# ADD this new section after the US-locked settings block:
+
+SPEED_SUBFOLDER  = "speed"   # subfolder name used inside Analysis/
+
+# Window around each CS onset, in seconds.
+# Pre = how many seconds before onset to include (default 30 s = 300 bins).
+# Post = how many seconds after onset to include (default 60 s = 600 bins).
+SPEED_PRE_S  = 30.0
+SPEED_POST_S = 60.0
 
 # ── Prism export ─────────────────────────────────────────────────────────────
 #
@@ -307,12 +321,17 @@ def main():
         cs_detection_mode       = CS_DETECTION_MODE,
         tone_status_col_csplus  = TONE_STATUS_COL_CSPLUS,
         tone_status_col_csminus = TONE_STATUS_COL_CSMINUS,
+        speed_subfolder         = SPEED_SUBFOLDER,
+        speed_pre_bins          = int(round(SPEED_PRE_S  * 10)),  # seconds → 100ms bins
+        speed_post_bins         = int(round(SPEED_POST_S * 10)),
+        
         # run toggles (used by run_report)
         run_sanity_check        = RUN_SANITY_CHECK,
         run_freezing            = RUN_FREEZING,
         run_platform            = RUN_PLATFORM,
         run_eee                 = RUN_EEE,
         run_us_locked           = RUN_US_LOCKED,
+        run_speed               = RUN_SPEED,
     )
 
     report = run_report.new_report(cfg)
@@ -351,6 +370,13 @@ def main():
         print("="*60)
         from us_locked_analysis import run as run_us_locked
         run_us_locked(cfg, report=report)
+        
+    if RUN_SPEED:
+        print("\n" + "="*60)
+        print("SPEED ANALYSIS")
+        print("="*60)
+        from speed_analysis import run as run_speed
+        run_speed(cfg, report=report)
 
     run_report.write_excel_report(report, analysis_out)
 

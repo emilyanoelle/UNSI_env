@@ -50,6 +50,7 @@ ANALYSIS_KEYS = {
     "platform_latency": "Platform Latency",
     "us_locked":        "US Locked",
     "eee":              "EEE",
+    "speed":            "Speed",
 }
 
 # Sheet name → tab colour
@@ -61,6 +62,7 @@ _TAB_COLORS = {
     "Platform Latency":   "833C00",
     "US Locked":          "4472C4",
     "EEE":                "7030A0",
+    "Speed":              "1F6B3A",
     "Excluded Subjects":  "C00000",
     "Per-Subject Log":    "595959",
 }
@@ -74,6 +76,7 @@ _SHEET_ORDER = [
     "Platform Latency",
     "US Locked",
     "EEE",
+    "Speed",
     "Excluded Subjects",
     "Per-Subject Log",
 ]
@@ -285,6 +288,7 @@ def _overview_sheet(wb, report: dict, existing_ts: dict, ran_this_session: set):
         ("platform_latency", "Platform Latency", "Platform Latency"),
         ("us_locked",        "US Locked",        "US Locked"),
         ("eee",              "EEE",              "EEE"),
+        ("speed",            "Speed",            "Speed"),
     ]
 
     for ri, (key, label, sheet_name) in enumerate(analysis_display):
@@ -593,6 +597,16 @@ def write_excel_report(report: dict, out_dir: Path):
              ("Prism export", cfg.get("prism_export")),
              ("Outcome logic",
               "evade=100% on platform | endure=0% | escape=mounted during US")],
+        )
+        
+    if cfg.get("run_speed"):
+        sheets_to_write["Speed"] = (
+            "speed",
+            [("Subfolder",       cfg.get("speed_subfolder")),
+             ("Pre-onset (s)",   cfg.get("speed_pre_bins",  300) / 10),
+             ("Post-onset (s)",  cfg.get("speed_post_bins", 600) / 10),
+             ("Bin width",       "100 ms"),
+             ("Prism export",    "n/a — outputs are Excel workbooks directly")],
         )
 
     ran_this_session = set(sheets_to_write.keys())

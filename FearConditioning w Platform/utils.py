@@ -617,6 +617,13 @@ def find_platform_col(df: pd.DataFrame, cfg: Optional[dict] = None) -> str:
     )
 
 
+def find_speed_col(df: pd.DataFrame, cfg: Optional[dict] = None) -> str:
+    return resolve_column(
+        df, "speed", cfg,
+        fallback=lambda cols: [c for c in cols if c == "speed" or "speed" in c]
+    )
+
+
 def find_ttl_cols(df: pd.DataFrame, cfg: Optional[dict] = None) -> tuple:
     cols = df.columns.tolist()
 
