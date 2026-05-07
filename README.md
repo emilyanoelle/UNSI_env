@@ -63,7 +63,7 @@ The recommended workflow is to keep the repository connected to GitHub and make 
 
 ## Engineering Highlights
 
-These scripts are more than one-off analysis notebooks. They include several production-style data workflow features:
+These scripts are designed to be more than one-off analysis notebooks. They include several production-style data workflow features:
 
 - **Config-driven execution:** users change settings in `runner.py`, not analysis internals.
 - **Column aliasing:** users can define expected variations like `In platform`, `Inside platform`, or `Shocker active`.
