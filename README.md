@@ -33,6 +33,7 @@ Before running a pipeline, you need:
 - The required Python packages installed
 - Your data organized according to the pipeline README
 - A metadata spreadsheet linking behavior IDs to animal information
+- A local copy of this repository, ideally connected to GitHub through your Python IDE
 
 Start by reading the README for the pipeline you want to use:
 
@@ -41,13 +42,24 @@ Start by reading the README for the pipeline you want to use:
 
 Basic workflow:
 
-1. Choose the pipeline folder for your assay.
-2. Read that pipeline's README.
-3. Organize your raw data and metadata spreadsheet as described.
-4. Open `runner.py` in Spyder, VS Code, or another Python IDE.
-5. Edit the configuration section at the top of `runner.py`.
-6. Run the script.
-7. Review the generated figures, CSVs, Excel tables, and run report.
+1. Clone or download this repository.
+2. Connect your Python IDE to the repository if possible.
+3. Make your own branch before changing configuration or analysis code.
+4. Choose the pipeline folder for your assay.
+5. Read that pipeline's README.
+6. Organize your raw data and metadata spreadsheet as described.
+7. Open `runner.py` in Spyder, VS Code, or another Python IDE.
+8. Edit the configuration section at the top of `runner.py`.
+9. Run the script.
+10. Review the generated figures, CSVs, Excel tables, and run report.
+
+If you are new to GitHub or branches, these are useful starting points:
+
+- [GitHub Get Started Guide](https://docs.github.com/en/get-started)
+- [Learn Git Branching](https://learngitbranching.js.org/)
+- [Atlassian guide to Git branches](https://www.atlassian.com/git/tutorials/using-branches)
+
+The recommended workflow is to keep the repository connected to GitHub and make your own branch for edits. You can also copy the pipeline files into your own local folders, but that is not recommended because it makes updates harder to track, makes bug fixes harder to pull in, and increases the chance that different users end up running slightly different versions of the analysis.
 
 ## Engineering Highlights
 
