@@ -1,33 +1,122 @@
-# UNSI Lab Behavioral Pipelines
-Within this hub are folders containing python analysis files for specific behavioral assays, each with their own README. Below allows you to see a selected preview of some outputs.
-<br><br>
+# UNSI Lab Behavioral Analysis Pipelines
+
+This repository contains Python pipelines for turning raw behavioral exports into organized summaries, Prism-ready tables, run reports, and polished vector-based figures. The workflows were built around real lab data, where file names, metadata, column names, cohorts, and session structures are not always perfectly tidy.
+
+The two main pipelines are:
+
+- **1-Port Platform Mediated Avoidance**
+- **Fear Conditioning with Platform**
+
+Each pipeline has its own detailed README and a `runner.py` configuration file. Most users only need to edit the configuration section at the top of `runner.py`, then run the script.
+
+## Why These Pipelines Are Useful
+
+These pipelines are designed to make behavioral analysis reproducible, inspectable, and friendly to use:
+
+- Read raw behavior exports directly from organized session folders
+- Match subjects to metadata spreadsheets across sessions and cohorts
+- Use configurable aliases to handle column-name variation across exports
+- Improve behavior ID parsing from messy file names using metadata-aware matching
+- Normalize treatment groups, sex labels, cohort labels, and trial types
+- Generate publication-friendly **SVG vector figures**
+- Export Prism-ready Excel workbooks for downstream statistics
+- Write run reports documenting what was analyzed, skipped, and why
+
+The aliasing and parsing pieces are especially valuable outside academia too: they make the code more resilient to inconsistent real-world data inputs, while still failing loudly when ambiguity could produce the wrong result.
+
+## Getting Started
+
+Before running a pipeline, you need:
+
+- Python 3.7 or higher
+- A way to run Python scripts, ideally Spyder or VS Code
+- The required Python packages installed
+- Your data organized according to the pipeline README
+- A metadata spreadsheet linking behavior IDs to animal information
+
+Start by reading the README for the pipeline you want to use:
+
+- [`1pPMA/README.md`](1pPMA/README.md)
+- [`FearConditioning w Platform/readme.md`](FearConditioning%20w%20Platform/readme.md)
+
+Basic workflow:
+
+1. Choose the pipeline folder for your assay.
+2. Read that pipeline's README.
+3. Organize your raw data and metadata spreadsheet as described.
+4. Open `runner.py` in Spyder, VS Code, or another Python IDE.
+5. Edit the configuration section at the top of `runner.py`.
+6. Run the script.
+7. Review the generated figures, CSVs, Excel tables, and run report.
+
+## Engineering Highlights
+
+These scripts are more than one-off analysis notebooks. They include several production-style data workflow features:
+
+- **Config-driven execution:** users change settings in `runner.py`, not analysis internals.
+- **Column aliasing:** users can define expected variations like `In platform`, `Inside platform`, or `Shocker active`.
+- **Strict/fallback matching:** strict mode avoids heuristic guessing; fallback mode supports older exports.
+- **Ambiguity protection:** ambiguous column matches raise clear errors instead of silently choosing the wrong signal.
+- **Metadata-aware ID parsing:** messy file names can still be matched to known subjects, with longest valid ID matching to avoid partial-subject mistakes.
+- **Run reports:** Excel reports capture settings, included/excluded subjects, columns used, and warnings.
+- **Vector output:** figures are saved as SVGs, which stay crisp for posters, manuscripts, slide decks, and portfolios.
+
+---
 
 ## Example Outputs for 1-Port Platform Mediated Avoidance
-### Cue-aligned nosepoke probability (trial-averaged)
-In order to quantify cue-evoked behavior, trial-aligned nosepoke activity is averaged across trials within each animal and then across animals within a treatment group, allowing visualization of how behavior evolves relative to cue onset. Similar cue-aligned analyses are performed for additional behavioral measures, including time on platform.
-<div align="center"><img width="1282" height="687" alt="{E14E7062-9A11-4481-B537-C0E793A28097}" src="https://github.com/user-attachments/assets/0ad7e2b4-7628-4383-ba64-8d2dc54b15b8" /></div> 
 
-### Session-wide nosepoke activity (30 s binned histogram)
-In order to visualize subject-specific reward seeking over time and capture potential changes in pursuit (e.g., satiation), nosepoke activity is plotted as a full-session histogram binned in 30-second intervals, where each bin reflects total time spent nosepoking. Additional analyses, such as total reward received across treatment groups per session, are also performed.
-<div align="center"><img src="https://github.com/user-attachments/assets/fffde13b-5685-4ccd-b9c7-8013010f236f" width="48%"></div>
+### Cue-aligned nosepoke probability
+
+Trial-aligned nosepoke activity is averaged within each animal and then across treatment groups, making it easier to visualize cue-evoked behavior over time. Similar cue-aligned analyses are produced for other behavioral measures, including time on platform.
+
+<div align="center">
+  <img width="1282" height="687" alt="Cue-aligned nosepoke probability plot" src="https://github.com/user-attachments/assets/0ad7e2b4-7628-4383-ba64-8d2dc54b15b8" />
+</div>
+
+### Session-wide nosepoke activity
+
+Full-session histograms show subject-specific reward seeking over time using 30-second bins. These views help reveal session dynamics such as pursuit, satiation, and individual variability.
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/fffde13b-5685-4ccd-b9c7-8013010f236f" width="55%" alt="Session-wide nosepoke histogram">
+</div>
 
 ### Shock outcomes across trials
-In order to summarize how subjects respond to and learn from aversive cues over time, trial-by-trial classification of avoidance behavior (Avoided, Escaped, Fully Shocked) is plotted across the session. Further plots and tables are produced to assess individual subject performance, latency to utilize the platform from cue onset, and more.
-<div align="center"><img src="https://github.com/user-attachments/assets/2b7e8150-e692-41c6-8a19-af19b4e9a36b" width="48%"></div>
 
-<hr>
+Trial-by-trial avoidance classifications summarize how subjects respond to aversive cues over the session. Additional outputs quantify latency, individual performance, and cross-session trends.
 
-## Example Outputs for Fear Conditioning w/ Platform
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/2b7e8150-e692-41c6-8a19-af19b4e9a36b" width="55%" alt="Shock outcome classification plot">
+</div>
 
-### % Time Freezing (trial-aligned)
-In order to quantify cue-evoked freezing behavior, % time freezing is computed within each trial window and averaged across trials within each animal and then across animals within a treatment group, allowing visualization of how cue-evoked freezing evolves across trials and days.
-<div align="center"><img src="https://github.com/user-attachments/assets/ae88c4fc-d255-4aa2-a0f9-9637c6ac0110" width="90%"></div>
+---
 
-### Shock Outcome Classification (Evade / Escape / Endure)
-In order to characterize behavioral responses to aversive stimuli, CS+ trials are classified as Evade, Escape, or Endure based on platform occupancy during the shock window, and summarized across trials and animals within each treatment group to reveal differences in avoidance strategy.
-<div align="center"><img src="https://github.com/user-attachments/assets/a29ee84f-3df9-420e-b479-3ce63e29d663" width="75%"></div>
+## Example Outputs for Fear Conditioning with Platform
 
-### US-locked Platform Time
-In order to isolate behavior specifically during shock delivery, platform occupancy is computed within the US (shock) window for each trial, enabling assessment of avoidance performance independent of the full cue period and comparison across treatment groups.
-<div align="center"><img src="https://github.com/user-attachments/assets/76e6580c-8801-448c-8289-d4505e209d82" width="48%"></div>
+### Percent time freezing
 
+Percent time freezing is computed within each trial window, then summarized across animals and treatment groups. The tiled SVG output makes it easy to compare cue-evoked freezing across trials and days.
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/ae88c4fc-d255-4aa2-a0f9-9637c6ac0110" width="90%" alt="Percent time freezing tiled SVG plot">
+</div>
+
+### Shock outcome classification
+
+CS+ trials are classified as **Evade**, **Escape**, or **Endure** based on platform occupancy during the shock window. This makes avoidance strategy visible at both the individual and treatment-group level.
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/a29ee84f-3df9-420e-b479-3ce63e29d663" width="75%" alt="Evade escape endure stacked bar plot">
+</div>
+
+### US-locked platform time
+
+Platform occupancy is computed specifically during the US/shock window, isolating avoidance performance at the moment of shock delivery rather than across the entire cue period.
+
+<div align="center">
+  <img src="https://github.com/user-attachments/assets/76e6580c-8801-448c-8289-d4505e209d82" width="55%" alt="US-locked platform time heatmap">
+</div>
+
+## Notes
+
+The figures shown here are representative outputs. Most generated figures are saved as SVG files so they can be edited or resized without losing quality.
