@@ -3,10 +3,6 @@
 eee_analysis.py
 ---------------
 Classifies CS+ shock trials as Evade, Escape, or Endure for all session days.
-
-Raw CSVs are read directly from each BehaviorData folder's day directories.
-Within-session outputs  → <BehaviorData>/<day>/Analysis/Shock outcomes.../
-Across-session cohort outputs → <BehaviorData>/Analysis/Shock outcomes.../
 """
 
 from pathlib import Path
@@ -16,6 +12,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 import utils
+import run_report as rr
 
 
 US_DEFAULT_LEN_S  = 2.0
@@ -37,18 +34,30 @@ def _first_rising_after(df, time_col, ttl_col, t0):
     return int(sub.index[idx[0]]) if len(idx) > 0 else None
 
 
-def _find_us_cols(df):
-    import re
-    cols = df.columns.tolist()
-    def like(words):
-        pat = re.compile(r".*".join(re.compile(w).pattern for w in words))
-        matches = [c for c in cols if pat.search(c)]
-        return matches[0] if matches else None
-    us_on  = (like(["us","on","activat"]) or like(["shock","on","activat"])
-               or like(["us","on"]) or like(["shock","on"]))
-    us_off = (like(["us","off","activat"]) or like(["shock","off","activat"])
-               or like(["us","off"]) or like(["shock","off"]))
-    return us_on, us_off
+def _first_shocker_window(df, time_col, shocker_col, trial_start, trial_end):
+    if shocker_col is None or shocker_col not in df.columns:
+        return None, None
+
+    sub = df[(df[time_col] >= trial_start) & (df[time_col] <= trial_end)]
+    if sub.empty:
+        return None, None
+
+    active = sub[shocker_col].fillna(0).astype(float).to_numpy() > 0
+    if not active.any():
+        return None, None
+
+    times = sub[time_col].astype(float).to_numpy()
+    start_ix = int(np.where(active)[0][0])
+    end_ix = start_ix + 1
+    while end_ix < len(active) and active[end_ix]:
+        end_ix += 1
+
+    us_start = max(float(times[start_ix]), trial_start)
+    us_end = float(times[end_ix]) if end_ix < len(times) else trial_end
+    us_end = min(us_end, trial_end)
+    if us_end <= us_start:
+        return None, None
+    return us_start, us_end
 
 
 def _classify_outcome(t, platform, us_start, us_end):
@@ -70,16 +79,22 @@ def _classify_outcome(t, platform, us_start, us_end):
 # Per-file processing
 # =============================================================================
 
-def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg):
-    test_date, behavior_id = utils.parse_filename_bits(csv_path)
+def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg, report=None):
+    test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
     if behavior_id is None:
         print(f"  [warn] Could not parse behavior_id from {csv_path.name}; skipping.")
+        if report is not None:
+            rr.record_exclusion(report, "eee", csv_path.name,
+                                "could not parse behavior_id from filename")
         return []
 
     row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
         if meta is not None else pd.DataFrame()
     if row_meta.empty:
         print(f"  [warn] behavior_id '{behavior_id}' not in metadata; skipping {csv_path.name}.")
+        if report is not None:
+            rr.record_exclusion(report, "eee", csv_path.name,
+                                f"behavior_id '{behavior_id}' not found in metadata")
         return []
 
     row       = row_meta.iloc[0]
@@ -90,37 +105,84 @@ def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg):
 
     df = utils.load_csv(csv_path)
     try:
-        time_col = utils.find_time_col(df)
+        time_col = utils.find_time_col(df, cfg)
+        platform_col = utils.find_platform_col(df, cfg)
     except ValueError as e:
         print(f"  [warn] {csv_path.name}: {e}; skipping.")
-        return []
-
-    if "in_platform" not in df.columns:
-        print(f"  [warn] {csv_path.name}: no 'in_platform' column; skipping.")
+        if report is not None:
+            rr.record_exclusion(report, "eee", csv_path.name, str(e))
         return []
 
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
     trials, _, cs_source = utils.detect_trials(df, time_col, cfg)
-    us_on, us_off = _find_us_cols(df)
+    shocker_col = None
+    us_on = us_off = None
+    if cfg.get("use_shocker_column"):
+        try:
+            shocker_col = utils.find_shocker_col(df, cfg)
+        except ValueError as e:
+            print(f"  [warn] {csv_path.name}: {e}; skipping.")
+            if report is not None:
+                rr.record_exclusion(report, "eee", csv_path.name, str(e))
+            return []
+        if shocker_col is None:
+            msg = "USE_SHOCKER_COLUMN is True, but no Shocker active column was found"
+            print(f"  [warn] {csv_path.name}: {msg}; skipping.")
+            if report is not None:
+                rr.record_exclusion(report, "eee", csv_path.name, msg)
+            return []
+    else:
+        try:
+            us_on, us_off = utils.find_us_cols(df, cfg)
+        except ValueError as e:
+            print(f"  [warn] {csv_path.name}: {e}; skipping.")
+            if report is not None:
+                rr.record_exclusion(report, "eee", csv_path.name, str(e))
+            return []
+
+    cs_trials = [t for t in trials if t["type"] == "CS+"]
+    if not cs_trials:
+        if report is not None:
+            rr.record_exclusion(report, "eee", csv_path.name, "no CS+ trials detected")
+        return []
+
+    # Record columns used
+    if report is not None:
+        rr.record_subject(report, "eee", csv_path.name,
+                          columns_used={"time":          time_col,
+                                        "in_platform":   platform_col,
+                                        "CS+_detection": cs_source,
+                                        "US_detection":  shocker_col or "TTL",
+                                        "US_on_col":     us_on  or "not used",
+                                        "US_off_col":    us_off or "not used"})
+
     day, context, session = utils.parse_folder_bits(day_dir.name)
     t    = df[time_col].astype(float).to_numpy()
-    plat = df["in_platform"].fillna(0).astype(float).to_numpy()
+    plat = df[platform_col].fillna(0).astype(float).to_numpy()
 
     rows = []
-    for tr in [t for t in trials if t["type"] == "CS+"]:
+    for tr in cs_trials:
         if tr["trial_index"] > cfg["eee_trial_cap"]:
             continue
-        us_on_ix = _first_rising_after(df, time_col, us_on, tr["start"])
-        if us_on_ix is None:
-            outcome = "no_us"; us_start = us_end = np.nan
-        else:
-            us_start = float(df.loc[us_on_ix, time_col])
-            if us_start >= tr["end"]:
-                outcome = "no_us"; us_end = np.nan
+        if shocker_col is not None:
+            us_start, us_end = _first_shocker_window(
+                df, time_col, shocker_col, tr["start"], tr["end"])
+            if us_start is None:
+                outcome = "no_us"; us_start = us_end = np.nan
             else:
-                us_end  = utils.get_off_time(df, time_col, us_off, us_start, US_DEFAULT_LEN_S)
-                us_s, us_e = utils.clip_interval(us_start, us_end, tr["start"], tr["end"])
-                outcome = _classify_outcome(t, plat, us_s, us_e)
+                outcome = _classify_outcome(t, plat, us_start, us_end)
+        else:
+            us_on_ix = _first_rising_after(df, time_col, us_on, tr["start"])
+            if us_on_ix is None:
+                outcome = "no_us"; us_start = us_end = np.nan
+            else:
+                us_start = float(df.loc[us_on_ix, time_col])
+                if us_start >= tr["end"]:
+                    outcome = "no_us"; us_end = np.nan
+                else:
+                    us_end  = utils.get_off_time(df, time_col, us_off, us_start, US_DEFAULT_LEN_S)
+                    us_s, us_e = utils.clip_interval(us_start, us_end, tr["start"], tr["end"])
+                    outcome = _classify_outcome(t, plat, us_s, us_e)
 
         rows.append(dict(
             animal_id=animal_id, behavior_id=behavior_id,
@@ -140,7 +202,7 @@ def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg):
 # Data collection across all BehaviorData dirs
 # =============================================================================
 
-def _collect_all(cfg, meta):
+def _collect_all(cfg, meta, report=None):
     suffix   = cfg["csv_suffix"]
     all_rows = []
     for bd in cfg["behaviordata_dirs"]:
@@ -148,7 +210,7 @@ def _collect_all(cfg, meta):
         for day_dir in utils.find_session_dirs(bd):
             csvs = sorted(day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
             for csv_path in csvs:
-                all_rows.extend(_process_file(csv_path, bd_meta, day_dir, bd, cfg))
+                all_rows.extend(_process_file(csv_path, bd_meta, day_dir, bd, cfg, report=report))
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
@@ -314,17 +376,16 @@ def _find_behaviordata_for_cohort(cohort_id, behaviordata_dirs):
 # Entry point
 # =============================================================================
 
-def run(cfg):
+def run(cfg, report=None):
     subfolder = cfg["eee_subfolder"]
 
     print("  Classifying CS+ outcomes across all session days...")
-    df = _collect_all(cfg, None)  # meta loaded per-bd inside _collect_all
+    df = _collect_all(cfg, None, report=report)
 
     if df.empty:
         print("  [warn] No EEE data found. Skipping EEE analysis.")
         return
 
-    # Within-session outputs, one folder per day session.
     print("  Writing within-session day outputs...")
     if "_day_dir" in df.columns:
         for day_dir, day_df in df.groupby("_day_dir", dropna=False):
@@ -335,7 +396,6 @@ def run(cfg):
             print(f"  Writing day outputs to {day_out}")
             _write_outputs(day_df.copy(), day_out, cfg, f"eee_{day_path.name}")
 
-    # Across-session outputs, one folder per BehaviorData root and cohort.
     if "cohort_id" in df.columns:
         for cohort_id, cohort_df in df.groupby("cohort_id", dropna=False):
             if pd.isna(cohort_id):

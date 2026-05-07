@@ -3,16 +3,6 @@
 platform_analysis.py
 --------------------
 Two-pass pipeline for % time on platform and (optionally) latency to platform.
-
-Pass 1 — Per-day (per BehaviorData folder):
-    Reads raw AnyMaze CSVs from the top level of each day folder.
-    Writes per-day platform_summary.csv into:
-        <day_folder>/Analysis/<subfolder>/platform_summary.csv
-
-Pass 2 — Cumulative:
-    Reads all per-day summaries across ALL BehaviorData folders.
-    Combined outputs  → cfg["analysis_out"] / "<subfolder>"/
-    Cohort outputs    → <BehaviorData>/Analysis/<subfolder>/
 """
 
 from pathlib import Path
@@ -22,6 +12,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 import utils
+import run_report as rr
 
 
 # =============================================================================
@@ -41,31 +32,26 @@ def _compute_latency(t, p, start, end):
     return np.nan
 
 
-def _find_latency_col(df):
-    for c in ["latency_to_platform_s","latency_to_platform",
-              "latency_s","latency","latency_to_platform__s"]:
-        if c in df.columns:
-            return c
-    for c in df.columns:
-        if "latency" in c.lower() and "platform" in c.lower():
-            return c
-    return None
-
-
 # =============================================================================
 # Pass 1 helpers
 # =============================================================================
 
-def _process_file(csv_path, meta, day_dir, cfg):
-    test_date, behavior_id = utils.parse_filename_bits(csv_path)
+def _process_file(csv_path, meta, day_dir, cfg, report=None):
+    test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
     if behavior_id is None:
         print(f"  [warn] Could not parse behavior_id from {csv_path.name}; skipping.")
+        if report is not None:
+            rr.record_exclusion(report, "platform", csv_path.name,
+                                "could not parse behavior_id from filename")
         return pd.DataFrame()
 
     row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
         if meta is not None else pd.DataFrame()
     if row_meta.empty:
         print(f"  [warn] behavior_id '{behavior_id}' not in metadata; skipping {csv_path.name}.")
+        if report is not None:
+            rr.record_exclusion(report, "platform", csv_path.name,
+                                f"behavior_id '{behavior_id}' not found in metadata")
         return pd.DataFrame()
 
     row       = row_meta.iloc[0]
@@ -77,26 +63,47 @@ def _process_file(csv_path, meta, day_dir, cfg):
 
     df = utils.load_csv(csv_path)
     try:
-        time_col = utils.find_time_col(df)
+        time_col = utils.find_time_col(df, cfg)
+        platform_col = utils.find_platform_col(df, cfg)
     except ValueError as e:
         print(f"  [warn] {csv_path.name}: {e}; skipping.")
-        return pd.DataFrame()
-
-    if "in_platform" not in df.columns:
-        print(f"  [warn] {csv_path.name}: no 'in_platform' column; skipping.")
+        if report is not None:
+            rr.record_exclusion(report, "platform", csv_path.name, str(e))
         return pd.DataFrame()
 
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
-    trials, itis, _ = utils.detect_trials(df, time_col, cfg)
+    trials, itis, cs_source = utils.detect_trials(df, time_col, cfg)
     windows = trials + itis
     if not windows:
         print(f"  [warn] No trials detected in {csv_path.name}.")
+        if report is not None:
+            rr.record_exclusion(report, "platform", csv_path.name, "no trials detected")
         return pd.DataFrame()
 
+    try:
+        lat_col = utils.find_latency_col(df, cfg)
+    except ValueError as e:
+        print(f"  [warn] {csv_path.name}: {e}; skipping.")
+        if report is not None:
+            rr.record_exclusion(report, "platform", csv_path.name, str(e))
+        return pd.DataFrame()
+
+    # Record columns used
+    if report is not None:
+        rr.record_subject(report, "platform", csv_path.name,
+                          columns_used={"time":          time_col,
+                                        "in_platform":   platform_col,
+                                        "CS+_detection": cs_source,
+                                        "latency_col":   lat_col or "computed from in_platform"})
+        if cfg.get("platform_latency"):
+            rr.record_subject(report, "platform_latency", csv_path.name,
+                              columns_used={"latency_col": lat_col or "computed from in_platform",
+                                            "time":        time_col,
+                                            "in_platform": platform_col})
+
     day, context, session = utils.parse_folder_bits(day_dir.name)
-    t       = df[time_col].astype(float).to_numpy()
-    p       = df["in_platform"].fillna(0).astype(float).to_numpy()
-    lat_col = _find_latency_col(df)
+    t = df[time_col].astype(float).to_numpy()
+    p = df[platform_col].fillna(0).astype(float).to_numpy()
 
     rows = []
     for w in windows:
@@ -140,7 +147,7 @@ def _process_file(csv_path, meta, day_dir, cfg):
     return pd.DataFrame(rows)
 
 
-def _process_day(day_dir, meta, cfg):
+def _process_day(day_dir, meta, cfg, report=None):
     suffix    = cfg["csv_suffix"]
     subfolder = cfg["platform_subfolder"]
     csvs      = sorted(day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
@@ -150,7 +157,7 @@ def _process_day(day_dir, meta, cfg):
 
     frames = []
     for csv_path in csvs:
-        df = _process_file(csv_path, meta, day_dir, cfg)
+        df = _process_file(csv_path, meta, day_dir, cfg, report=report)
         if not df.empty:
             frames.append(df)
 
@@ -158,7 +165,6 @@ def _process_day(day_dir, meta, cfg):
         return pd.DataFrame()
 
     day_df  = pd.concat(frames, ignore_index=True)
-    # FIX: consistent path — always <day_folder>/Analysis/<subfolder>/
     out_dir = day_dir / "Analysis" / subfolder
     out_dir.mkdir(parents=True, exist_ok=True)
     day_df.to_csv(out_dir / "platform_summary.csv", index=False)
@@ -175,7 +181,6 @@ def _collect_cumulative(cfg):
     frames    = []
     for bd in cfg["behaviordata_dirs"]:
         for day_dir in utils.find_session_dirs(bd):
-            # FIX: match the path written by _process_day — include "Analysis/"
             summary = day_dir / "Analysis" / subfolder / "platform_summary.csv"
             if summary.exists():
                 frames.append(pd.read_csv(summary))
@@ -369,7 +374,6 @@ def _write_outputs(plat_df, out_dir, cfg, fname_tag):
     if cfg["platform_latency"]:
         lat_df = plat_df.dropna(subset=["latency_to_platform_s"])
         if not lat_df.empty:
-            # FIX: lat_dir is a subfolder of out_dir, not a separate top-level path
             lat_dir = out_dir / "latency_to_platform"
             lat_dir.mkdir(exist_ok=True)
             lat_df.to_csv(lat_dir / f"{fname_tag}_latency_all_days_concat.csv", index=False)
@@ -405,28 +409,25 @@ def _find_behaviordata_for_cohort(cohort_id, behaviordata_dirs):
 # Entry point
 # =============================================================================
 
-def run(cfg):
+def run(cfg, report=None):
     subfolder = cfg["platform_subfolder"]
 
-    # Pass 1
     print("  Pass 1: processing raw CSVs day by day...")
     for bd in cfg["behaviordata_dirs"]:
         meta = utils.load_metadata(bd)
         for day_dir in utils.find_session_dirs(bd):
-            _process_day(day_dir, meta, cfg)
+            _process_day(day_dir, meta, cfg, report=report)
 
-    # Pass 2
+
     print("  Pass 2: concatenating across all cohorts...")
     plat_df = _collect_cumulative(cfg)
     if plat_df.empty:
         print("  [warn] No platform data found. Skipping figures.")
         return
 
-    # Combined output
     print("  Writing combined outputs...")
     _write_outputs(plat_df.copy(), cfg["analysis_out"] / subfolder, cfg, "platform")
 
-    # Per-cohort outputs
     if "cohort_id" in plat_df.columns:
         for cohort_id, cohort_df in plat_df.groupby("cohort_id", dropna=False):
             if pd.isna(cohort_id):

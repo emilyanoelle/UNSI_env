@@ -6,10 +6,12 @@ START HERE. This is the only file you need to edit to run the pipeline.
 
 Set your directories, toggle which analyses you want, configure your treatment
 groups and colors, then run this file in Spyder (press play).
+
 """
 
 from pathlib import Path
 from utils import build_treatment_normalizer
+import run_report
 
 
 # ── Data directories ─────────────────────────────────────────────────────────
@@ -21,15 +23,14 @@ from utils import build_treatment_normalizer
 # Use raw strings (the r prefix) to avoid issues with backslashes on Windows.
 
 BEHAVIORDATA_DIRS = [
-    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData",
-    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 2\BehaviorData",
+    r"Z:\NIMH DIRP NSI\Personnel Folders\Emilya\fear cond w platform test"
 ]
 
 # Top-level folder where combined across-cohort outputs are written.
 # Per-session outputs are always written inside their own BehaviorData folder.
 # Cohort-specific across-session outputs go to:
 #   <BehaviorData>/<cohort_id>/Analysis/<subfolder>/
-ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis"
+ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Personnel Folders\Emilya\fear cond w platform test\Analysis02"
 
 
 # ── Treatment group configuration ────────────────────────────────────────────
@@ -39,16 +40,18 @@ ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Con
 # The FIRST key is treated as the control group for figure ordering.
 
 TREATMENT_ALIASES = {
-    "control": ["ctrl", "cntrl", "control", "Control", "CTRL"],
-    "ELS":     ["ELS", "els", "LBN", "lbn"],
+    "cre-wt": ["cre-wt"],
+    "mCherry":     ["mCherry", "mch"],
+    "PV KO":     ["pv ko", "PV KO"],
 }
 
 # Hex color for each canonical treatment label (keys must match above exactly).
 # Female colors and unknown-sex colors are derived automatically as lighter
 # tints — you do not need to specify them separately.
 TREATMENT_COLORS = {
-    "control": "#0F52BA",
-    "ELS":     "#EC5800",
+    "cre-wt": "#558D9E",
+    "mCherry":     "#EC5800",
+    "PV KO":    "#BA55D3",
 }
 
 
@@ -56,10 +59,10 @@ TREATMENT_COLORS = {
 #
 # Set to True to run, False to skip.
 
-RUN_SANITY_CHECK    = True     # tracking coverage + IQR outliers + trial window consistency
-RUN_FREEZING        = True     # % time freezing + freezing bouts (if enabled below)
+RUN_SANITY_CHECK    = False     # tracking coverage + IQR outliers + trial window consistency
+RUN_FREEZING        = False     # % time freezing + freezing bouts (if enabled below)
 RUN_PLATFORM        = False    # % time on platform + latency to platform (if enabled below)
-RUN_EEE             = False    # Evade / Escape / Endure shock outcome classification
+RUN_EEE             = True    # Evade / Escape / Endure shock outcome classification
 RUN_US_LOCKED       = False    # % platform time locked to the shock delivery window
 
 
@@ -78,7 +81,7 @@ RUN_US_LOCKED       = False    # % platform time locked to the shock delivery wi
 #                 Recommended when you are unsure which columns are present,
 #                 or when your dataset mixes export configurations.
 
-CS_DETECTION_MODE = "tone_status"
+CS_DETECTION_MODE = "ttl"
 
 # Column name patterns for tone-status detection (used when mode is
 # "tone_status" or "auto"). Write them in any natural form — they are
@@ -88,6 +91,78 @@ CS_DETECTION_MODE = "tone_status"
 # Change these only if your AnyMaze export uses different column names.
 TONE_STATUS_COL_CSPLUS  = "cs plus tone status"
 TONE_STATUS_COL_CSMINUS = "cs minus tone status"
+
+
+# Column matching configuration
+#
+# Column aliases let you list the real column-name variations that appear in
+# your AnyMaze exports. The pipeline normalizes both the CSV headers and these
+# aliases before comparing them, so "In platform" and "in_platform" are treated
+# the same. If more than one column matches a role, the pipeline raises an
+# "Ambiguous ..." error instead of guessing.
+#
+# "strict"   - only use COLUMN_ALIASES. Missing required columns raise errors.
+# "fallback" - try COLUMN_ALIASES first; if no alias matches, use the older
+#              built-in heuristics such as finding columns containing "freez".
+
+COLUMN_MATCH_MODE = "fallback"
+
+COLUMN_ALIASES = {
+    "time": [
+        "Time (s)",
+        "Time",
+    ],
+    "freezing": [
+        "Freezing",
+        "Freezing state",
+    ],
+    "in_platform": [
+        "In platform",
+        "Inside platform",
+    ],
+    "latency_to_platform": [
+        "latency_to_platform_s",
+        "Latency to platform",
+        "Latency to platform (s)",
+    ],
+    "csplus_tone_status": [
+        "CS+ tone status",
+        "CS plus tone status",
+        TONE_STATUS_COL_CSPLUS,
+    ],
+    "csminus_tone_status": [
+        "CS- tone status",
+        "CS minus tone status",
+        TONE_STATUS_COL_CSMINUS,
+    ],
+    "csplus_on": [
+        "CS+ ON activated",
+        "CS plus ON activated",
+    ],
+    "csplus_off": [
+        "CS+ OFF activated",
+        "CS plus OFF activated",
+    ],
+    "csminus_on": [
+        "CS- ON activated",
+        "CS minus ON activated",
+    ],
+    "csminus_off": [
+        "CS- OFF activated",
+        "CS minus OFF activated",
+    ],
+    "us_on": [
+        "US ON activated",
+        "Shock ON activated",
+    ],
+    "us_off": [
+        "US OFF activated",
+        "Shock OFF activated",
+    ],
+    "shocker_active": [
+        "Shocker active",
+    ],
+}
 
 
 # ── Trial caps ───────────────────────────────────────────────────────────────
@@ -120,7 +195,7 @@ EEE_SUBFOLDER       = "Shock outcomes (evade-escape-endure)"
 
 FREEZING_BOUTS      = True   # also compute and plot freezing bout counts
 FREEZING_BY_SEX     = False  # generate sex × treatment breakdown figures
-FREEZING_BY_LITTER  = True   # generate litter-level figures
+FREEZING_BY_LITTER  = False   # generate litter-level figures
                               # (requires litter_id column in metadata)
 
 
@@ -146,7 +221,7 @@ EEE_BY_SEX          = False  # generate sex × treatment stacked bar figures
 #   using the same trial detection logic as platform_analysis.py. Works for
 #   all sessions including yoked controls.
 
-USE_SHOCKER_COLUMN     = False
+USE_SHOCKER_COLUMN     = True
 US_DURATION_S          = 2.0    # Mode B only: assumed shock window length (seconds)
 
 US_CHANCE_BASELINE_PCT = 16.4   # Subtracted from platform_pct to give "above chance".
@@ -166,7 +241,7 @@ EXCLUDE_BEHAVIOR_IDS   = []
 #                  Useful for visualising the distribution of responders.
 # "alphabetical" — sort by animal_id alphanumerically. Keeps each animal in
 #                  the same row position across sessions for direct comparison.
-HEATMAP_SORT           = "response"
+HEATMAP_SORT           = "alphabetical"
 
 
 # ── Prism export ─────────────────────────────────────────────────────────────
@@ -226,10 +301,20 @@ def main():
         include_treatments      = INCLUDE_TREATMENTS,
         exclude_behavior_ids    = EXCLUDE_BEHAVIOR_IDS,
         heatmap_sort            = HEATMAP_SORT,
+        column_match_mode       = COLUMN_MATCH_MODE,
+        column_aliases          = COLUMN_ALIASES,
         cs_detection_mode       = CS_DETECTION_MODE,
         tone_status_col_csplus  = TONE_STATUS_COL_CSPLUS,
         tone_status_col_csminus = TONE_STATUS_COL_CSMINUS,
+        # run toggles (used by run_report)
+        run_sanity_check        = RUN_SANITY_CHECK,
+        run_freezing            = RUN_FREEZING,
+        run_platform            = RUN_PLATFORM,
+        run_eee                 = RUN_EEE,
+        run_us_locked           = RUN_US_LOCKED,
     )
+
+    report = run_report.new_report(cfg)
 
     if RUN_SANITY_CHECK:
         print("\n" + "="*60)
@@ -243,28 +328,30 @@ def main():
         print("FREEZING ANALYSIS")
         print("="*60)
         from freezing_analysis import run as run_freezing
-        run_freezing(cfg)
+        run_freezing(cfg, report=report)
 
     if RUN_PLATFORM:
         print("\n" + "="*60)
         print("PLATFORM ANALYSIS")
         print("="*60)
         from platform_analysis import run as run_platform
-        run_platform(cfg)
+        run_platform(cfg, report=report)
 
     if RUN_EEE:
         print("\n" + "="*60)
         print("EVADE / ESCAPE / ENDURE ANALYSIS")
         print("="*60)
         from eee_analysis import run as run_eee
-        run_eee(cfg)
+        run_eee(cfg, report=report)
 
     if RUN_US_LOCKED:
         print("\n" + "="*60)
         print("US-LOCKED PLATFORM ANALYSIS")
         print("="*60)
         from us_locked_analysis import run as run_us_locked
-        run_us_locked(cfg)
+        run_us_locked(cfg, report=report)
+
+    run_report.write_excel_report(report, analysis_out)
 
     print("\n" + "="*60)
     print("Pipeline complete.")

@@ -22,22 +22,29 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 import utils
+import run_report as rr
 
 
 # =============================================================================
 # Pass 1 helpers
 # =============================================================================
 
-def _process_file(csv_path, meta, day_dir, cfg):
-    test_date, behavior_id = utils.parse_filename_bits(csv_path)
+def _process_file(csv_path, meta, day_dir, cfg, report=None):
+    test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
     if behavior_id is None:
         print(f"  [warn] Could not parse behavior_id from {csv_path.name}; skipping.")
+        if report is not None:
+            rr.record_exclusion(report, "freezing", csv_path.name,
+                                "could not parse behavior_id from filename")
         return pd.DataFrame()
 
     row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
         if meta is not None else pd.DataFrame()
     if row_meta.empty:
         print(f"  [warn] behavior_id '{behavior_id}' not in metadata; skipping {csv_path.name}.")
+        if report is not None:
+            rr.record_exclusion(report, "freezing", csv_path.name,
+                                f"behavior_id '{behavior_id}' not found in metadata")
         return pd.DataFrame()
 
     row       = row_meta.iloc[0]
@@ -49,18 +56,34 @@ def _process_file(csv_path, meta, day_dir, cfg):
 
     df = utils.load_csv(csv_path)
     try:
-        time_col   = utils.find_time_col(df)
-        freeze_col = utils.find_freeze_col(df)
+        time_col   = utils.find_time_col(df, cfg)
+        freeze_col = utils.find_freeze_col(df, cfg)
     except ValueError as e:
         print(f"  [warn] {csv_path.name}: {e}; skipping.")
+        if report is not None:
+            rr.record_exclusion(report, "freezing", csv_path.name, str(e))
         return pd.DataFrame()
 
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
-    trials, itis, _ = utils.detect_trials(df, time_col, cfg)
+    trials, itis, cs_source = utils.detect_trials(df, time_col, cfg)
     windows = trials + itis
     if not windows:
         print(f"  [warn] No trials detected in {csv_path.name}.")
+        if report is not None:
+            rr.record_exclusion(report, "freezing", csv_path.name, "no trials detected")
         return pd.DataFrame()
+
+    # Record columns used for this subject
+    if report is not None:
+        rr.record_subject(report, "freezing", csv_path.name,
+                          columns_used={"time":          time_col,
+                                        "freeze":        freeze_col,
+                                        "CS+_detection": cs_source})
+        if cfg.get("freezing_bouts"):
+            rr.record_subject(report, "freezing_bouts", csv_path.name,
+                              columns_used={"time":          time_col,
+                                            "freeze":        freeze_col,
+                                            "CS+_detection": cs_source})
 
     day, context, session = utils.parse_folder_bits(day_dir.name)
     t = df[time_col].astype(float).to_numpy()
@@ -95,7 +118,7 @@ def _process_file(csv_path, meta, day_dir, cfg):
     return pd.DataFrame(rows)
 
 
-def _process_day(day_dir, meta, cfg):
+def _process_day(day_dir, meta, cfg, report=None):
     suffix    = cfg["csv_suffix"]
     subfolder = cfg["freezing_subfolder"]
     csvs      = sorted(day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
@@ -105,7 +128,7 @@ def _process_day(day_dir, meta, cfg):
 
     frames = []
     for csv_path in csvs:
-        df = _process_file(csv_path, meta, day_dir, cfg)
+        df = _process_file(csv_path, meta, day_dir, cfg, report=report)
         if not df.empty:
             frames.append(df)
 
@@ -113,7 +136,6 @@ def _process_day(day_dir, meta, cfg):
         return pd.DataFrame()
 
     day_df  = pd.concat(frames, ignore_index=True)
-    # FIX: consistent path — always <day_folder>/Analysis/<subfolder>/
     out_dir = day_dir / "Analysis" / subfolder
     out_dir.mkdir(parents=True, exist_ok=True)
     day_df.to_csv(out_dir / "freezing_summary.csv", index=False)
@@ -158,16 +180,15 @@ def _detect_bouts(t, x, start, end):
     return bouts
 
 
-def _compute_bouts(day_dir, meta, cfg):
+def _compute_bouts(day_dir, meta, cfg, report=None):
     suffix  = cfg["csv_suffix"]
-    # FIX: bouts sit alongside the summary, not in a nested Analysis/Analysis path
     out_dir = day_dir / "Analysis" / cfg["freezing_subfolder"] / "freezing_bouts"
     out_dir.mkdir(parents=True, exist_ok=True)
     csvs    = sorted(day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
 
     all_rows = []
     for csv_path in csvs:
-        test_date, behavior_id = utils.parse_filename_bits(csv_path)
+        test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
         if behavior_id is None:
             continue
         row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
@@ -184,8 +205,8 @@ def _compute_bouts(day_dir, meta, cfg):
 
         df = utils.load_csv(csv_path)
         try:
-            time_col   = utils.find_time_col(df)
-            freeze_col = utils.find_freeze_col(df)
+            time_col   = utils.find_time_col(df, cfg)
+            freeze_col = utils.find_freeze_col(df, cfg)
         except ValueError:
             continue
 
@@ -241,7 +262,6 @@ def _collect_cumulative(cfg):
 
     for bd in cfg["behaviordata_dirs"]:
         for day_dir in utils.find_session_dirs(bd):
-            # FIX: match the path written by _process_day — include "Analysis/"
             summary = day_dir / "Analysis" / subfolder / "freezing_summary.csv"
             if summary.exists():
                 freeze_frames.append(pd.read_csv(summary))
@@ -249,7 +269,6 @@ def _collect_cumulative(cfg):
                 print(f"  [warn] Missing per-day summary: {summary}")
 
             if cfg["freezing_bouts"]:
-                # FIX: match path written by _compute_bouts
                 bouts_csv = day_dir / "Analysis" / subfolder / "freezing_bouts" / "Freezing_Bouts_Long.csv"
                 if bouts_csv.exists():
                     bout_frames.append(pd.read_csv(bouts_csv))
@@ -493,7 +512,6 @@ def _prism_export(df, value_col, out_dir, tag):
 # =============================================================================
 
 def _write_outputs(freeze_df, bout_df, out_dir, cfg, fname_tag):
-    """Write figures, concat CSVs, and Prism tables to out_dir."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
     freeze_df["_trial_type"] = freeze_df["trial_type"].apply(utils.normalize_trial_type)
@@ -514,7 +532,6 @@ def _write_outputs(freeze_df, bout_df, out_dir, cfg, fname_tag):
                           "% Time Freezing", out_dir, cfg, fname_tag)
 
     if cfg["freezing_bouts"] and not bout_df.empty:
-        # FIX: out_dir is already the analysis root; don't prepend "Analysis/" again
         bout_dir = out_dir / "freezing_bouts"
         bout_dir.mkdir(exist_ok=True)
         bout_df["_trial_type"] = bout_df["trial_type"].apply(utils.normalize_trial_type)
@@ -548,23 +565,19 @@ def _write_outputs(freeze_df, bout_df, out_dir, cfg, fname_tag):
 # Entry point
 # =============================================================================
 
-def run(cfg):
+def run(cfg, report=None):
     subfolder = cfg["freezing_subfolder"]
 
-    # ------------------------------------------------------------------
-    # Pass 1: per-day CSVs written into each BehaviorData folder
-    # ------------------------------------------------------------------
+    # Pass 1
     print("  Pass 1: processing raw CSVs day by day...")
     for bd in cfg["behaviordata_dirs"]:
         meta = utils.load_metadata(bd)
         for day_dir in utils.find_session_dirs(bd):
-            _process_day(day_dir, meta, cfg)
+            _process_day(day_dir, meta, cfg, report=report)
             if cfg["freezing_bouts"]:
-                _compute_bouts(day_dir, meta, cfg)
+                _compute_bouts(day_dir, meta, cfg, report=report)
 
-    # ------------------------------------------------------------------
-    # Pass 2: collect all per-day summaries across all cohorts
-    # ------------------------------------------------------------------
+    # Pass 2
     print("  Pass 2: concatenating across all cohorts...")
     freeze_df, bout_df = _collect_cumulative(cfg)
 
@@ -572,27 +585,21 @@ def run(cfg):
         print("  [warn] No freezing data found. Skipping figures.")
         return
 
-    # --- Combined output (all cohorts collapsed by treatment) ---
     print("  Writing combined outputs...")
     combined_out = cfg["analysis_out"] / subfolder
     _write_outputs(freeze_df.copy(), bout_df.copy(), combined_out, cfg, "freezing")
 
-    # --- Per-cohort outputs ---
     if "cohort_id" in freeze_df.columns:
         for cohort_id, cohort_freeze in freeze_df.groupby("cohort_id", dropna=False):
             if pd.isna(cohort_id):
                 continue
-
             cohort_bout = (bout_df[bout_df["cohort_id"] == cohort_id]
                            if not bout_df.empty and "cohort_id" in bout_df.columns
                            else pd.DataFrame())
-
             cohort_bd = _find_behaviordata_for_cohort(cohort_id, cfg["behaviordata_dirs"])
             if cohort_bd is None:
-                print(f"  [warn] Cannot locate BehaviorData folder for cohort '{cohort_id}'; "
-                      f"skipping per-cohort output.")
+                print(f"  [warn] Cannot locate BehaviorData folder for cohort '{cohort_id}'; skipping.")
                 continue
-
             cohort_out = cohort_bd / "Analysis" / subfolder
             print(f"  Writing cohort '{cohort_id}' outputs to {cohort_out}")
             _write_outputs(cohort_freeze.copy(), cohort_bout.copy(),

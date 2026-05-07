@@ -211,7 +211,49 @@ def extract_behavior_id_token(text: str) -> Optional[str]:
     return s
 
 
-def parse_filename_bits(csv_path: Path) -> tuple:
+def _metadata_behavior_id_from_text(text: str, meta_df: Optional[pd.DataFrame]) -> Optional[str]:
+    if text is None or meta_df is None or "behavior_id" not in meta_df.columns:
+        return None
+
+    hay = str(text)
+    hay_lower = hay.lower()
+    matches = []
+
+    for bid in meta_df["behavior_id"].dropna().astype(str).unique().tolist():
+        norm = normalize_behavior_id_for_lookup(bid)
+        if not norm:
+            continue
+        clean = re.sub(r"[^a-z0-9]", "", norm)
+        if not clean:
+            continue
+        if len(clean) < 3:
+            continue
+
+        tokens = re.findall(r"[a-z0-9]+", norm)
+        if not tokens:
+            continue
+
+        # Allow junk before the ID and minor punctuation differences inside the
+        # ID, but require a clean ending boundary. This prevents a metadata ID
+        # like "6069-b" from matching inside a longer filename token such as
+        # "sdf6069-b-cobalt_...".
+        body = r"[^a-z0-9]*".join(re.escape(t) for t in tokens)
+        pat = re.compile(body + r"(?=$|[_\s\(\)\[\]\{\}]|[^a-z0-9-])")
+        m = pat.search(hay_lower)
+        if m:
+            found = hay[m.start():m.end()]
+            matches.append((len(clean), m.start(), found))
+
+    if not matches:
+        return None
+
+    # Prefer the most specific metadata ID. This avoids returning "6069" when
+    # "6069-bugtester" is also present in metadata.
+    matches.sort(key=lambda x: (-x[0], x[1]))
+    return matches[0][2]
+
+
+def parse_filename_bits(csv_path: Path, meta_df: Optional[pd.DataFrame] = None) -> tuple:
     stem = csv_path.stem
     m    = re.search(r"(\d{2}-\d{2}-\d{2})", stem)
     if not m:
@@ -221,6 +263,12 @@ def parse_filename_bits(csv_path: Path) -> tuple:
     if not rest:
         return date, None
     bid = extract_behavior_id_token(rest)
+    if meta_df is not None:
+        if bid and not find_metadata_for_behavior(meta_df, bid).empty:
+            return date, bid
+        meta_bid = _metadata_behavior_id_from_text(rest, meta_df)
+        if meta_bid:
+            return date, meta_bid
     return date, bid
 
 
@@ -397,12 +445,12 @@ def detect_trials(df: pd.DataFrame, time_col: str, cfg: dict) -> tuple:
     csminus_pattern = cfg.get("tone_status_col_csminus", "cs minus tone status")
 
     def _try_tone_status():
-        csplus_col, csminus_col = find_tone_status_cols(df, csplus_pattern, csminus_pattern)
+        csplus_col, csminus_col = find_tone_status_cols(df, csplus_pattern, csminus_pattern, cfg)
         trials, itis = detect_trials_from_tone_status(df, time_col, csplus_col, csminus_col)
         return trials, itis, f"tone_status ({csplus_col}, {csminus_col})"
 
     def _try_ttl():
-        csplus_on, csplus_off, csminus_on, csminus_off = find_ttl_cols(df)
+        csplus_on, csplus_off, csminus_on, csminus_off = find_ttl_cols(df, cfg)
         trials, itis = detect_trials_from_ttl(
             df, time_col, csplus_on, csplus_off, csminus_on, csminus_off)
         return trials, itis, f"TTL ({csplus_on}, {csminus_on})"
@@ -468,51 +516,159 @@ def interval_fraction_on(t, x, start, end) -> float:
 # Column finders
 # =============================================================================
 
-def find_time_col(df: pd.DataFrame) -> str:
-    cols = [c for c in df.columns if c.startswith("time")]
-    if not cols:
-        raise ValueError(f"No time column found. Columns present: {df.columns.tolist()}")
-    return cols[0]
+def _cfg_column_aliases(cfg: Optional[dict]) -> dict:
+    if not cfg:
+        return {}
+    aliases = cfg.get("column_aliases", {})
+    return aliases if isinstance(aliases, dict) else {}
 
 
-def find_freeze_col(df: pd.DataFrame) -> str:
-    cols = [c for c in df.columns if "freez" in c]
-    if not cols:
-        raise ValueError(f"No freezing column found. Columns present: {df.columns.tolist()}")
-    return cols[0]
+def _column_match_mode(cfg: Optional[dict]) -> str:
+    if not cfg:
+        return "fallback"
+    mode = str(cfg.get("column_match_mode", "fallback")).strip().lower()
+    if mode not in {"strict", "fallback"}:
+        raise ValueError(
+            f"Unknown COLUMN_MATCH_MODE '{mode}'. Use 'strict' or 'fallback'."
+        )
+    return mode
 
 
-def find_ttl_cols(df: pd.DataFrame) -> tuple:
+def _format_match_list(cols: list) -> str:
+    return ", ".join(repr(c) for c in cols)
+
+
+def _one_column_or_raise(role: str, matches: list) -> Optional[str]:
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise ValueError(
+            f"Ambiguous column match for '{role}': matched "
+            f"{_format_match_list(matches)}. Update COLUMN_ALIASES['{role}'] "
+            "in runner.py so only one column matches."
+        )
+    return None
+
+
+def _alias_matches(df: pd.DataFrame, role: str, cfg: Optional[dict]) -> list:
+    aliases = _cfg_column_aliases(cfg).get(role, [])
+    if isinstance(aliases, str):
+        aliases = [aliases]
+    norm_aliases = {
+        norm_colname(alias)
+        for alias in aliases
+        if alias is not None and str(alias).strip()
+    }
+    if not norm_aliases:
+        return []
+    return [c for c in df.columns.tolist() if norm_colname(c) in norm_aliases]
+
+
+def resolve_column(df: pd.DataFrame, role: str, cfg: Optional[dict] = None,
+                   fallback=None, required: bool = True) -> Optional[str]:
+    """
+    Resolve one normalized dataframe column for a semantic role.
+
+    Matching order:
+      1. Exact normalized aliases from cfg["column_aliases"][role].
+      2. In fallback mode only, the role's older heuristic matcher.
+
+    More than one match is always an error; the pipeline should not guess which
+    signal to analyze.
+    """
+    alias_match = _one_column_or_raise(role, _alias_matches(df, role, cfg))
+    if alias_match is not None:
+        return alias_match
+
+    mode = _column_match_mode(cfg)
+    if mode == "fallback" and fallback is not None:
+        fallback_match = _one_column_or_raise(role, fallback(df.columns.tolist()))
+        if fallback_match is not None:
+            return fallback_match
+
+    if required:
+        aliases = _cfg_column_aliases(cfg).get(role, [])
+        alias_msg = f" Aliases checked: {aliases}." if aliases else ""
+        raise ValueError(
+            f"No column found for '{role}' in {mode} column match mode."
+            f"{alias_msg} Columns present: {df.columns.tolist()}"
+        )
+    return None
+
+
+def find_time_col(df: pd.DataFrame, cfg: Optional[dict] = None) -> str:
+    return resolve_column(
+        df, "time", cfg,
+        fallback=lambda cols: [c for c in cols if c.startswith("time")]
+    )
+
+
+def find_freeze_col(df: pd.DataFrame, cfg: Optional[dict] = None) -> str:
+    return resolve_column(
+        df, "freezing", cfg,
+        fallback=lambda cols: [c for c in cols if "freez" in c]
+    )
+
+
+def find_platform_col(df: pd.DataFrame, cfg: Optional[dict] = None) -> str:
+    return resolve_column(
+        df, "in_platform", cfg,
+        fallback=lambda cols: [c for c in cols if c == "in_platform"]
+    )
+
+
+def find_ttl_cols(df: pd.DataFrame, cfg: Optional[dict] = None) -> tuple:
     cols = df.columns.tolist()
 
     def like(words):
         pat     = re.compile(r".*".join(re.escape(w) for w in words))
         matches = [c for c in cols if pat.search(c)]
-        return matches[0] if matches else None
+        return matches
 
-    csplus_on   = like(["cs", "plus", "on", "activat"])  or like(["csplus", "on"])  or like(["cs", "plus", "on"])
-    csplus_off  = like(["cs", "plus", "off", "activat"]) or like(["csplus", "off"]) or like(["cs", "plus", "off"])
-    csminus_on  = like(["cs", "minus", "on", "activat"]) or like(["csminus", "on"]) or like(["cs", "minus", "on"])
-    csminus_off = like(["cs", "minus", "off", "activat"])or like(["csminus", "off"])or like(["cs", "minus", "off"])
+    csplus_on = resolve_column(
+        df, "csplus_on", cfg, required=False,
+        fallback=lambda _: like(["cs", "plus", "on", "activat"]) or like(["csplus", "on"]) or like(["cs", "plus", "on"])
+    )
+    csplus_off = resolve_column(
+        df, "csplus_off", cfg, required=False,
+        fallback=lambda _: like(["cs", "plus", "off", "activat"]) or like(["csplus", "off"]) or like(["cs", "plus", "off"])
+    )
+    csminus_on = resolve_column(
+        df, "csminus_on", cfg, required=False,
+        fallback=lambda _: like(["cs", "minus", "on", "activat"]) or like(["csminus", "on"]) or like(["cs", "minus", "on"])
+    )
+    csminus_off = resolve_column(
+        df, "csminus_off", cfg, required=False,
+        fallback=lambda _: like(["cs", "minus", "off", "activat"]) or like(["csminus", "off"]) or like(["cs", "minus", "off"])
+    )
     return csplus_on, csplus_off, csminus_on, csminus_off
 
 
 def find_tone_status_cols(df: pd.DataFrame,
                           csplus_pattern:  str = "cs plus tone status",
-                          csminus_pattern: str = "cs minus tone status") -> tuple:
+                          csminus_pattern: str = "cs minus tone status",
+                          cfg: Optional[dict] = None) -> tuple:
     cols = df.columns.tolist()
 
-    def find_one(pattern: str) -> Optional[str]:
+    def find_one(pattern: str) -> list:
         norm    = norm_colname(pattern)
         matches = [c for c in cols if norm in c]
         if matches:
-            return matches[0]
+            return matches
         tokens  = norm.split("_")
         matches = [c for c in cols if all(t in c for t in tokens)]
-        return matches[0] if matches else None
+        return matches
 
-    csplus  = find_one(csplus_pattern)
-    csminus = find_one(csminus_pattern)
+    csplus = resolve_column(
+        df, "csplus_tone_status", cfg,
+        fallback=lambda _: find_one(csplus_pattern),
+        required=False,
+    )
+    csminus = resolve_column(
+        df, "csminus_tone_status", cfg,
+        fallback=lambda _: find_one(csminus_pattern),
+        required=False,
+    )
 
     if csplus is None or csminus is None:
         missing = []
@@ -525,19 +681,63 @@ def find_tone_status_cols(df: pd.DataFrame,
     return csplus, csminus
 
 
-def find_latency_col(df: pd.DataFrame) -> Optional[str]:
+def find_latency_col(df: pd.DataFrame, cfg: Optional[dict] = None) -> Optional[str]:
     candidates = ["latency_to_platform_s", "latency_to_platform",
                   "latency_s", "latency", "latency_to_platform__s"]
-    for c in candidates:
-        if c in df.columns:
-            return c
-    for c in df.columns:
-        if "latency" in c.lower() and "platform" in c.lower():
-            return c
-    for c in df.columns:
-        if c.lower().startswith("latency"):
-            return c
-    return None
+
+    def fallback(cols):
+        exact = [c for c in candidates if c in cols]
+        if exact:
+            return exact
+        both = [c for c in cols if "latency" in c.lower() and "platform" in c.lower()]
+        if both:
+            return both
+        return [c for c in cols if c.lower().startswith("latency")]
+
+    return resolve_column(
+        df, "latency_to_platform", cfg,
+        fallback=fallback,
+        required=False,
+    )
+
+
+def find_us_cols(df: pd.DataFrame, cfg: Optional[dict] = None) -> tuple:
+    cols = df.columns.tolist()
+
+    def like(words):
+        matches = []
+        for c in cols:
+            tokens = re.split(r"[^a-z0-9]+", c.lower())
+            pos = 0
+            ok = True
+            for word in words:
+                while pos < len(tokens) and not tokens[pos].startswith(word):
+                    pos += 1
+                if pos >= len(tokens):
+                    ok = False
+                    break
+                pos += 1
+            if ok:
+                matches.append(c)
+        return matches
+
+    us_on = resolve_column(
+        df, "us_on", cfg, required=False,
+        fallback=lambda _: like(["us", "on", "activat"]) or like(["shock", "on", "activat"]) or like(["us", "on"]) or like(["shock", "on"])
+    )
+    us_off = resolve_column(
+        df, "us_off", cfg, required=False,
+        fallback=lambda _: like(["us", "off", "activat"]) or like(["shock", "off", "activat"]) or like(["us", "off"]) or like(["shock", "off"])
+    )
+    return us_on, us_off
+
+
+def find_shocker_col(df: pd.DataFrame, cfg: Optional[dict] = None) -> Optional[str]:
+    return resolve_column(
+        df, "shocker_active", cfg,
+        fallback=lambda cols: [c for c in cols if "shocker" in c.lower() and "active" in c.lower()],
+        required=False,
+    )
 
 
 # =============================================================================

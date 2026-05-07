@@ -14,6 +14,8 @@ from collections import Counter, defaultdict
 
 import pandas as pd
 
+import utils
+
 
 # ── Data directories ─────────────────────────────────────────────────────────
 #
@@ -316,7 +318,7 @@ def check_csv(csv_path: Path, meta: pd.DataFrame, report_lines):
         log_line(report_lines, msg)
         return issues
 
-    date_token, behavior_id = parse_filename_bits(csv_path)
+    date_token, behavior_id = utils.parse_filename_bits(csv_path, meta)
 
     if not date_token:
         msg = f"[WARN] Could not parse test date from filename: {fname}"
@@ -365,8 +367,7 @@ def check_csv(csv_path: Path, meta: pd.DataFrame, report_lines):
         log_line(report_lines, msg)
 
     if behavior_id and meta is not None and "behavior_id" in meta.columns:
-        meta_ids = meta["behavior_id"].astype(str).str.strip()
-        if behavior_id not in meta_ids.values:
+        if utils.find_metadata_for_behavior(meta, behavior_id).empty:
             msg = f"[WARN] behavior_id '{behavior_id}' from filename does not appear in metadata"
             issues.append(("behavior_id_mismatch", msg))
             log_line(report_lines, msg)

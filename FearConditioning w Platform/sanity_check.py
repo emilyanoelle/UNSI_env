@@ -52,7 +52,7 @@ def _collect_raw(behaviordata: Path, meta: pd.DataFrame, cfg: dict) -> pd.DataFr
             day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv")
         )
         for csv_path in csvs:
-            test_date, behavior_id = utils.parse_filename_bits(csv_path)
+            test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
             if behavior_id is None:
                 continue
 
@@ -72,8 +72,8 @@ def _collect_raw(behaviordata: Path, meta: pd.DataFrame, cfg: dict) -> pd.DataFr
 
             df = utils.load_csv(csv_path)
             try:
-                time_col   = utils.find_time_col(df)
-                freeze_col = utils.find_freeze_col(df)
+                time_col   = utils.find_time_col(df, cfg)
+                freeze_col = utils.find_freeze_col(df, cfg)
             except ValueError:
                 continue
 
