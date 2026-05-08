@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 utils.py  –  Core helpers shared across all analysis modules.
-Constants live in config.py; import from there.
+Constants live in runner.py; import from there.
 """
 
 import os
@@ -12,7 +12,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-from config import (
+from runner import (
     CONTROL_TREATMENT, TREATMENT_ALIASES, EXCLUDED_TREATMENTS,
     TREATMENT_COLORS, TREATMENT_SEM_COLORS, SEM_ALPHA,
     CUE_DURATIONS, POST_TRIAL_BUFFER, LIGHT_CUES, CUE_LIGHT_WINDOW,
@@ -103,12 +103,23 @@ def concatenate_csvs(folder_path, output_filename="combined.csv"):
 
 # ── Downsampling ───────────────────────────────────────────────────────────────
 
+def _prepare_numeric_resample_frame(df, time_col="Time (s)"):
+    df = df.copy()
+    df[time_col] = pd.to_numeric(df[time_col], errors="coerce")
+    df = df.dropna(subset=[time_col])
+    for col in df.columns:
+        if col != time_col:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+    df["Timedelta"] = pd.to_timedelta(df[time_col], unit="s")
+    return df
+
+
 def downsample_data(file_path):
     df = pd.read_csv(file_path, encoding="ISO-8859-1")
     drop = ["Head position X", "Head position Y", "Tail position X", "Tail position Y"]
     df = df.drop(columns=[c for c in drop if c in df.columns], errors="ignore")
     df = df.replace(r"^\s*$", np.nan, regex=True)
-    df["Timedelta"] = pd.to_timedelta(df["Time (s)"], unit="s")
+    df = _prepare_numeric_resample_frame(df)
     df = df.set_index("Timedelta").resample("1s").mean()
     binary_cols = [
         "Freezing", "In platform", "In Grid", "In Reward Zone", "Nose poke active",
@@ -223,7 +234,7 @@ def load_behavior_fractional(file_path):
     drop = ["Head position X", "Head position Y", "Tail position X", "Tail position Y"]
     df = df.drop(columns=[c for c in drop if c in df.columns], errors="ignore")
     df = df.replace(r"^\s*$", np.nan, regex=True)
-    df["Timedelta"] = pd.to_timedelta(df["Time (s)"], unit="s")
+    df = _prepare_numeric_resample_frame(df)
     df_ds = df.set_index("Timedelta").resample("1s").mean()
     df_ds["Time (s)"] = df_ds.index.total_seconds()
     return df_ds.reset_index(drop=True)

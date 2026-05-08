@@ -12,7 +12,7 @@ import seaborn as sns
 from matplotlib.patches import Patch
 
 from utils import load_metadata, extract_cue_dict, normalize_metadata_treatments
-from config import CUE_DURATIONS, OUTCOME_COLORS, TREATMENT_COLORS, TREATMENT_SEM_COLORS, SEM_ALPHA
+from runner import CUE_DURATIONS, OUTCOME_COLORS, TREATMENT_COLORS, TREATMENT_SEM_COLORS, SEM_ALPHA
 
 TONE_TYPES    = ["Tone", "Conflict", "Tone-Light", "Light-Tone"]
 OUTCOME_ORDER = ["Avoided", "Escaped", "Fully_Shocked"]

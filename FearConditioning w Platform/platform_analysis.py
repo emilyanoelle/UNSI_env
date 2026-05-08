@@ -15,9 +15,7 @@ import utils
 import run_report as rr
 
 
-# =============================================================================
-# Latency helpers
-# =============================================================================
+# ── Latency helpers ─────────────────────────────────────────────────────────
 
 def _compute_latency(t, p, start, end):
     idx = np.searchsorted(t, start, side="right") - 1
@@ -32,9 +30,7 @@ def _compute_latency(t, p, start, end):
     return np.nan
 
 
-# =============================================================================
-# Pass 1 helpers
-# =============================================================================
+# ── Pass 1 helpers ──────────────────────────────────────────────────────────
 
 def _process_file(csv_path, meta, day_dir, cfg, report=None):
     test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
@@ -172,9 +168,7 @@ def _process_day(day_dir, meta, cfg, report=None):
     return day_df
 
 
-# =============================================================================
-# Pass 2 — cumulative collection
-# =============================================================================
+# ── Pass 2 - cumulative collection ──────────────────────────────────────────
 
 def _collect_cumulative(cfg):
     subfolder = cfg["platform_subfolder"]
@@ -189,9 +183,7 @@ def _collect_cumulative(cfg):
     return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
 
-# =============================================================================
-# Figures
-# =============================================================================
+# ── Figures ─────────────────────────────────────────────────────────────────
 
 def _tiled_individual(df, value_col, ylabel, title_prefix, out_dir, cfg,
                        fname_tag, trial_types=("CS+","CS-","ITI"), ylim=None):
@@ -331,9 +323,7 @@ def _tiled_by_sex(df, value_col, ylabel, title_prefix, out_dir, cfg,
         utils.save_fig(fig, out_dir / f"{fname_tag}_{tag}_by_sex_tiled.svg")
 
 
-# =============================================================================
-# Prism export
-# =============================================================================
+# ── Prism export ────────────────────────────────────────────────────────────
 
 def _prism_export(df, value_col, out_dir, tag):
     df     = df.sort_values(["treatment_group","_day_folder","_trial_type","trial_index","animal_id"])
@@ -352,9 +342,7 @@ def _prism_export(df, value_col, out_dir, tag):
     print(f"[ok] Prism table saved: {out_path}")
 
 
-# =============================================================================
-# Output helper
-# =============================================================================
+# ── Output helper ───────────────────────────────────────────────────────────
 
 def _write_outputs(plat_df, out_dir, cfg, fname_tag):
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -405,9 +393,7 @@ def _find_behaviordata_for_cohort(cohort_id, behaviordata_dirs):
     return None
 
 
-# =============================================================================
-# Entry point
-# =============================================================================
+# ── Entry point ─────────────────────────────────────────────────────────────
 
 def run(cfg, report=None):
     subfolder = cfg["platform_subfolder"]

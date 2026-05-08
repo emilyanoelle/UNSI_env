@@ -15,15 +15,14 @@ import sys
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 
 
-# =============================================================================
-# Colours / style constants
-# =============================================================================
+# ── Colours / style constants ───────────────────────────────────────────────
 
 _C = {
     "header_dark":  "FF1F3864",
@@ -82,9 +81,7 @@ _SHEET_ORDER = [
 ]
 
 
-# =============================================================================
-# Public API — called from analysis modules
-# =============================================================================
+# ── Public API - called from analysis modules ───────────────────────────────
 
 def new_report(cfg: dict) -> dict:
     return {
@@ -101,7 +98,8 @@ def new_report(cfg: dict) -> dict:
 
 
 def record_subject(report: dict, analysis: str, subject_key: str,
-                   columns_used: dict, warnings: list = None, skipped: list = None):
+                   columns_used: dict, warnings: Optional[list] = None,
+                   skipped: Optional[list] = None):
     log = report["logs"][analysis]
     log["subject_logs"][subject_key] = {
         "columns_used": columns_used,
@@ -119,9 +117,7 @@ def record_overview(report: dict, analysis: str, key: str, value):
     report["logs"][analysis]["extra_overview"][key] = value
 
 
-# =============================================================================
-# openpyxl helpers
-# =============================================================================
+# ── openpyxl helpers ────────────────────────────────────────────────────────
 
 def _hdr(ws, row, col, value, bg=_C["header_dark"], fg="FFFFFFFF",
          bold=True, size=11, wrap=False, colspan=1):
@@ -179,9 +175,7 @@ def _table(ws, row, col, headers, rows, widths=None):
     return row
 
 
-# =============================================================================
-# Timestamp banner  (written at the very top of every analysis sheet)
-# =============================================================================
+# ── Timestamp banner ────────────────────────────────────────────────────────
 
 def _write_ts_banner(ws, timestamp: str, fresh: bool, ncols: int = 4):
     """
@@ -197,9 +191,7 @@ def _write_ts_banner(ws, timestamp: str, fresh: bool, ncols: int = 4):
     ws.row_dimensions[1].height = 18
 
 
-# =============================================================================
-# Column overview builder
-# =============================================================================
+# ── Column overview builder ─────────────────────────────────────────────────
 
 def _col_overview(log: dict) -> list:
     role_counts = defaultdict(lambda: defaultdict(int))
@@ -219,9 +211,7 @@ def _col_overview(log: dict) -> list:
     return rows
 
 
-# =============================================================================
-# Existing-file timestamp reader
-# =============================================================================
+# ── Existing-file timestamp reader ──────────────────────────────────────────
 
 def _read_existing_timestamps(path: Path) -> dict:
     """
@@ -247,9 +237,7 @@ def _read_existing_timestamps(path: Path) -> dict:
     return ts
 
 
-# =============================================================================
-# Sheet builders
-# =============================================================================
+# ── Sheet builders ──────────────────────────────────────────────────────────
 
 def _overview_sheet(wb, report: dict, existing_ts: dict, ran_this_session: set):
     """
@@ -368,7 +356,8 @@ def _overview_sheet(wb, report: dict, existing_ts: dict, ran_this_session: set):
 
 
 def _analysis_sheet(wb, sheet_name: str, analysis_key: str, report: dict,
-                    timestamp: str, fresh: bool, extra_settings: list = None):
+                    timestamp: str, fresh: bool,
+                    extra_settings: Optional[list] = None):
     ws = wb.create_sheet(sheet_name[:31])
     ws.sheet_view.showGridLines = False
     for col, w in zip("ABCD", [28, 38, 22, 40]):
@@ -516,9 +505,7 @@ def _persubject_sheet(wb, report: dict, timestamp: str):
         _cell(ws, r, 1, "(no subject logs recorded)", bg=_C["warn"])
 
 
-# =============================================================================
-# Main entry point
-# =============================================================================
+# ── Main entry point ────────────────────────────────────────────────────────
 
 def write_excel_report(report: dict, out_dir: Path):
     """
@@ -667,9 +654,7 @@ def write_excel_report(report: dict, out_dir: Path):
     return out_path
 
 
-# =============================================================================
-# Sheet copy helper (carries over unchanged sheets verbatim)
-# =============================================================================
+# ── Sheet copy helper ───────────────────────────────────────────────────────
 
 def _copy_sheet(wb_src, wb_dst, sheet_name: str):
     """

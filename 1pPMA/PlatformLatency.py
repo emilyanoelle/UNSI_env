@@ -13,7 +13,7 @@ from utils import (
     load_behavior_fractional, normalize_metadata_treatments,
     load_metadata, treatment_from_mouse,
 )
-from config import (
+from runner import (
     CUE_DURATIONS, TREATMENT_COLORS, TREATMENT_SEM_COLORS, SEM_ALPHA,
 )
 

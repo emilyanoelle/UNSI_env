@@ -34,9 +34,7 @@ import utils
 TRACKING_THRESHOLD = 0.9   # minimum fraction of non-NaN samples to be "ok"
 
 
-# =============================================================================
-# Raw data collection
-# =============================================================================
+# ── Raw data collection ─────────────────────────────────────────────────────
 
 def _collect_raw(behaviordata: Path, meta: pd.DataFrame, cfg: dict) -> pd.DataFrame:
     """
@@ -127,9 +125,7 @@ def _collect_raw(behaviordata: Path, meta: pd.DataFrame, cfg: dict) -> pd.DataFr
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
-# =============================================================================
-# IQR helpers
-# =============================================================================
+# ── IQR helpers ─────────────────────────────────────────────────────────────
 
 def _iqr_flag(series: pd.Series) -> pd.Series:
     q1, q3 = series.quantile(0.25), series.quantile(0.75)
@@ -137,9 +133,7 @@ def _iqr_flag(series: pd.Series) -> pd.Series:
     return (series < q1 - 1.5 * iqr) | (series > q3 + 1.5 * iqr)
 
 
-# =============================================================================
-# Sanity check 1 — tracking coverage + freeze_pct IQR
-# =============================================================================
+# ── Sanity check 1 - tracking coverage + freeze_pct IQR ─────────────────────
 
 def _make_tracking_workbook(df: pd.DataFrame, out_path: Path):
     """
@@ -182,9 +176,7 @@ def _make_tracking_workbook(df: pd.DataFrame, out_path: Path):
     print(f"    [ok] Saved: {out_path}")
 
 
-# =============================================================================
-# Sanity check 2 — trial window timing consistency
-# =============================================================================
+# ── Sanity check 2 - trial window timing consistency ────────────────────────
 
 def _make_windows_workbook(df: pd.DataFrame, out_path: Path):
     """
@@ -253,9 +245,7 @@ def _make_windows_workbook(df: pd.DataFrame, out_path: Path):
     print(f"    [ok] Saved: {out_path}")
 
 
-# =============================================================================
-# Entry point
-# =============================================================================
+# ── Entry point ─────────────────────────────────────────────────────────────
 
 def run(cfg: dict):
     for bd in cfg["behaviordata_dirs"]:

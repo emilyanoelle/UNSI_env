@@ -23,14 +23,14 @@ import run_report
 # Use raw strings (the r prefix) to avoid issues with backslashes on Windows.
 
 BEHAVIORDATA_DIRS = [
-    r"Z:\NIMH DIRP NSI\Personnel Folders\Emilya\fear cond w platform test"
+    r"Z:\path\to\your\BehaviorData"
 ]
 
 # Top-level folder where combined across-cohort outputs are written.
 # Per-session outputs are always written inside their own BehaviorData folder.
 # Cohort-specific across-session outputs go to:
 #   <BehaviorData>/<cohort_id>/Analysis/<subfolder>/
-ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Personnel Folders\Emilya\fear cond w platform test\Analysis03"
+ANALYSIS_OUTPUT_DIR = r"Z:\path\to\combined\Analysis"
 
 
 # ── Treatment group configuration ────────────────────────────────────────────
@@ -59,11 +59,11 @@ TREATMENT_COLORS = {
 #
 # Set to True to run, False to skip.
 
-RUN_SANITY_CHECK    = False     # tracking coverage + IQR outliers + trial window consistency
-RUN_FREEZING        = False     # % time freezing + freezing bouts (if enabled below)
-RUN_PLATFORM        = False    # % time on platform + latency to platform (if enabled below)
-RUN_EEE             = False    # Evade / Escape / Endure shock outcome classification
-RUN_US_LOCKED       = False    # % platform time locked to the shock delivery window
+RUN_SANITY_CHECK    = True     # tracking coverage + IQR outliers + trial window consistency
+RUN_FREEZING        = True     # % time freezing + freezing bouts (if enabled below)
+RUN_PLATFORM        = True    # % time on platform + latency to platform (if enabled below)
+RUN_EEE             = True    # Evade / Escape / Endure shock outcome classification
+RUN_US_LOCKED       = True    # % platform time locked to the shock delivery window
 RUN_SPEED           = True     # CS-locked speed analysis
 
 
@@ -249,7 +249,6 @@ EXCLUDE_BEHAVIOR_IDS   = []
 HEATMAP_SORT           = "alphabetical"
 
 # ── Speed Analysis settings ───────────────────────────────────────────────────────────
-# ADD this new section after the US-locked settings block:
 
 SPEED_SUBFOLDER  = "speed"   # subfolder name used inside Analysis/
 
@@ -265,7 +264,6 @@ SPEED_POST_S = 60.0
 # analysis. Rows = trial index, columns = individual animal IDs.
 
 PRISM_EXPORT        = True
-
 
 # ── DO NOT EDIT BELOW THIS LINE ──────────────────────────────────────────────
 

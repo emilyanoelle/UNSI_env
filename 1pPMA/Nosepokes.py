@@ -15,7 +15,7 @@ from utils import (
     normalize_metadata_treatments, load_metadata, treatment_from_mouse,
     load_behavior_fractional,
 )
-from config import CUE_LIGHT_WINDOW, CUE_DURATIONS, POST_TRIAL_BUFFER, SEM_ALPHA
+from runner import CUE_LIGHT_WINDOW, CUE_DURATIONS, POST_TRIAL_BUFFER, SEM_ALPHA
 
 
 def run_nosepoke_analysis(data_folder, save_path, cue_dict, cue_dicts=None):

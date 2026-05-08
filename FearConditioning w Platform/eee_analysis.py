@@ -22,9 +22,7 @@ OUTCOME_ORDER  = ["evade","escape","endure"]
 OUTCOME_COLORS = {"evade":"#2ca02c","escape":"#1f77b4","endure":"#ff7f0e"}
 
 
-# =============================================================================
-# Outcome classification helpers
-# =============================================================================
+# ── Outcome classification helpers ──────────────────────────────────────────
 
 def _first_rising_after(df, time_col, ttl_col, t0):
     if ttl_col is None or ttl_col not in df.columns:
@@ -75,9 +73,7 @@ def _classify_outcome(t, platform, us_start, us_end):
     return "escape"
 
 
-# =============================================================================
-# Per-file processing
-# =============================================================================
+# ── Per-file processing ─────────────────────────────────────────────────────
 
 def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg, report=None):
     test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
@@ -198,9 +194,7 @@ def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg, report=None):
     return rows
 
 
-# =============================================================================
-# Data collection across all BehaviorData dirs
-# =============================================================================
+# ── Data collection across all BehaviorData dirs ────────────────────────────
 
 def _collect_all(cfg, meta, report=None):
     suffix   = cfg["csv_suffix"]
@@ -214,9 +208,7 @@ def _collect_all(cfg, meta, report=None):
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
-# =============================================================================
-# Per-animal proportions and group means
-# =============================================================================
+# ── Per-animal proportions and group means ──────────────────────────────────
 
 def _per_animal_props(df):
     valid = df[df["outcome"].isin(OUTCOME_ORDER)].copy()
@@ -249,9 +241,7 @@ def _group_means(per_animal, by_sex=False):
                  n_animals=("animal_id","nunique")))
 
 
-# =============================================================================
-# Figures
-# =============================================================================
+# ── Figures ─────────────────────────────────────────────────────────────────
 
 def _stacked_bar_panel(ax, group_means, x_keys, x_labels):
     evade  = np.array([group_means.get(k, {}).get("evade_pct",  0.0) for k in x_keys])
@@ -320,9 +310,7 @@ def _make_stacked_bars(group_df, out_dir, cfg, by_sex, fname_tag):
     utils.save_fig(fig, out_dir / f"{fname_tag}.svg")
 
 
-# =============================================================================
-# Prism export
-# =============================================================================
+# ── Prism export ────────────────────────────────────────────────────────────
 
 def _prism_export(per_animal, out_dir):
     out_path = out_dir / "eee_prism_ready.xlsx"
@@ -339,9 +327,7 @@ def _prism_export(per_animal, out_dir):
     print(f"[ok] Prism table saved: {out_path}")
 
 
-# =============================================================================
-# Output helper
-# =============================================================================
+# ── Output helper ───────────────────────────────────────────────────────────
 
 def _write_outputs(df, out_dir, cfg, fname_tag):
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -372,9 +358,7 @@ def _find_behaviordata_for_cohort(cohort_id, behaviordata_dirs):
     return None
 
 
-# =============================================================================
-# Entry point
-# =============================================================================
+# ── Entry point ─────────────────────────────────────────────────────────────
 
 def run(cfg, report=None):
     subfolder = cfg["eee_subfolder"]

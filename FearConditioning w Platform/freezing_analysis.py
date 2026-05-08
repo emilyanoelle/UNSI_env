@@ -25,9 +25,7 @@ import utils
 import run_report as rr
 
 
-# =============================================================================
-# Pass 1 helpers
-# =============================================================================
+# ── Pass 1 helpers ──────────────────────────────────────────────────────────
 
 def _process_file(csv_path, meta, day_dir, cfg, report=None):
     test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
@@ -143,9 +141,7 @@ def _process_day(day_dir, meta, cfg, report=None):
     return day_df
 
 
-# =============================================================================
-# Bout detection
-# =============================================================================
+# ── Bout detection ──────────────────────────────────────────────────────────
 
 def _detect_bouts(t, x, start, end):
     t = np.asarray(t, float)
@@ -251,9 +247,7 @@ def _compute_bouts(day_dir, meta, cfg, report=None):
     return bout_df
 
 
-# =============================================================================
-# Pass 2 — cumulative collection across all BehaviorData dirs
-# =============================================================================
+# ── Pass 2 - cumulative collection across all BehaviorData dirs ─────────────
 
 def _collect_cumulative(cfg):
     subfolder     = cfg["freezing_subfolder"]
@@ -278,9 +272,7 @@ def _collect_cumulative(cfg):
     return freeze_df, bout_df
 
 
-# =============================================================================
-# Figures
-# =============================================================================
+# ── Figures ─────────────────────────────────────────────────────────────────
 
 def _tiled_individual(df, value_col, ylabel, title_prefix, out_dir, cfg, fname_tag,
                       ylim=None):
@@ -486,9 +478,7 @@ def _tiled_by_litter(df, value_col, ylabel, title_prefix, out_dir, cfg, fname_ta
         utils.save_fig(fig, litter_dir / f"{fname_tag}_{tag}_by_litter_tiled.svg")
 
 
-# =============================================================================
-# Prism export
-# =============================================================================
+# ── Prism export ────────────────────────────────────────────────────────────
 
 def _prism_export(df, value_col, out_dir, tag):
     df     = df.sort_values(["treatment_group","_day_folder","_trial_type","trial_index","animal_id"])
@@ -507,9 +497,7 @@ def _prism_export(df, value_col, out_dir, tag):
     print(f"[ok] Prism table saved: {out_path}")
 
 
-# =============================================================================
-# Output helpers
-# =============================================================================
+# ── Output helpers ──────────────────────────────────────────────────────────
 
 def _write_outputs(freeze_df, bout_df, out_dir, cfg, fname_tag):
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -561,9 +549,7 @@ def _write_outputs(freeze_df, bout_df, out_dir, cfg, fname_tag):
         _prism_export(freeze_df, "freeze_pct", out_dir, fname_tag)
 
 
-# =============================================================================
-# Entry point
-# =============================================================================
+# ── Entry point ─────────────────────────────────────────────────────────────
 
 def run(cfg, report=None):
     subfolder = cfg["freezing_subfolder"]

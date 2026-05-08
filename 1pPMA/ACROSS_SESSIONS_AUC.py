@@ -11,7 +11,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from utils import normalize_metadata_treatments, treatment_from_mouse, legend_sort_key
-from config import (
+from runner import (
     CONTROL_TREATMENT, TREATMENT_COLORS, CUE_ORDER_DEFAULT,
 )
 

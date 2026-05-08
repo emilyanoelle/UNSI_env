@@ -6,7 +6,7 @@ Three analyses, all using the Feeder active / In Reward / In platform columns
 exported directly from AnyMaze.
 
 Reward volume assumption: 16 µL per second of Feeder active.
-Change FEEDER_RATE_UL_PER_SEC in config.py if your pump differs.
+Change FEEDER_RATE_UL_PER_SEC in runner.py if your pump differs.
 """
 
 import os
@@ -16,10 +16,14 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from utils import load_behavior_fractional, normalize_metadata_treatments, load_metadata, treatment_from_mouse
-from config import (
+from runner import (
     CUE_DURATIONS, FEEDER_RATE_UL_PER_SEC,
     TREATMENT_COLORS, TREATMENT_SEM_COLORS, SEM_ALPHA,
 )
+
+
+def _active_seconds(series):
+    return float(pd.to_numeric(series, errors="coerce").fillna(0).clip(0, 1).sum())
 
 
 # ── Total reward consumption ───────────────────────────────────────────────────
@@ -30,7 +34,7 @@ def compute_reward_consumption(data_folder, save_path):
 
     Method:
       - Resample raw CSV to 1 Hz (fractional).
-      - Count seconds where Feeder active > 0.
+      - Sum fractional seconds where Feeder active is on.
       - Total reward (µL) = feeder_seconds × FEEDER_RATE_UL_PER_SEC.
       - Convert to mL for reporting.
 
@@ -48,20 +52,20 @@ def compute_reward_consumption(data_folder, save_path):
         df = load_behavior_fractional(os.path.join(data_folder, file))
 
         if "Feeder active" not in df.columns:
-            print(f"⚠️   'Feeder active' not found: {mouse_id}")
+            print(f"[warn] 'Feeder active' not found: {mouse_id}")
             continue
 
-        feeder_s = (df["Feeder active"] > 0).sum()
+        feeder_s = _active_seconds(df["Feeder active"])
         total_uL = feeder_s * FEEDER_RATE_UL_PER_SEC
         rows.append({
             "Mouse_ID":          mouse_id,
-            "Feeder_Active_s":   int(feeder_s),
+            "Feeder_Active_s":   feeder_s,
             "Total_Reward_uL":   total_uL,
             "Total_Reward_mL":   total_uL / 1000,
         })
 
     if not rows:
-        print("⏭️   No feeder data found; skipping reward consumption.")
+        print("[skip] No feeder data found; skipping reward consumption.")
         return
 
     df_out = pd.DataFrame(rows)
@@ -76,7 +80,7 @@ def compute_reward_consumption(data_folder, save_path):
     plt.tight_layout()
     fig.savefig(os.path.join(save_path, "reward_summary.svg"), format="svg")
     plt.close(fig)
-    print(f"📄  Reward consumption saved: {save_path}")
+    print(f"[ok] Reward consumption saved: {save_path}")
 
 
 # ── Rewards during light trials ────────────────────────────────────────────────
@@ -109,26 +113,26 @@ def compute_rewards_in_light_trials(data_folder, save_path, cue_dict, cue_dicts=
             light_seconds.update(range(int(t), int(t) + 31))
 
         df_win = df[df["Time (s)"].round().astype(int).isin(light_seconds)]
-        feeder_s = (df_win["Feeder active"] > 0).sum()
+        feeder_s = _active_seconds(df_win["Feeder active"])
         total_uL = feeder_s * FEEDER_RATE_UL_PER_SEC
 
         rows.append({
             "Mouse_ID":                 mouse_id,
             "N_light_trials":           len(light_onsets),
-            "Feeder_Active_in_Light_s": int(feeder_s),
+            "Feeder_Active_in_Light_s": feeder_s,
             "Reward_in_Light_uL":       total_uL,
             "Reward_in_Light_mL":       total_uL / 1000,
             "Feeder_s_per_trial":       feeder_s / len(light_onsets),
         })
 
     if not rows:
-        print("⏭️   No data for rewards-in-light-trials.")
+        print("[skip] No data for rewards-in-light-trials.")
         return
 
     pd.DataFrame(rows).to_csv(
         os.path.join(save_path, "rewards_in_light_trials.csv"), index=False
     )
-    print(f"📄  Rewards in light trials saved: {save_path}")
+    print(f"[ok] Rewards in light trials saved: {save_path}")
 
 
 # ── Reward-Avoidance Index ─────────────────────────────────────────────────────
@@ -145,7 +149,7 @@ def compute_reward_avoidance_index(data_folder, save_path, cue_dict, cue_dicts=N
     NaN if neither zone was occupied during the cue (denominator = 0).
 
     Requires AnyMaze columns: 'In Reward' and 'In platform'.
-    Cue windows use CUE_DURATIONS from config.py.
+    Cue windows use CUE_DURATIONS from runner.py.
     """
     os.makedirs(save_path, exist_ok=True)
     required = {"In Reward", "In platform"}
@@ -160,7 +164,7 @@ def compute_reward_avoidance_index(data_folder, save_path, cue_dict, cue_dicts=N
 
         if not required.issubset(df.columns):
             missing = required - set(df.columns)
-            print(f"⚠️   {mouse_id}: missing columns {missing}; skipping.")
+            print(f"[warn] {mouse_id}: missing columns {missing}; skipping.")
             continue
 
         for cue_type, onsets in animal_cue.items():
@@ -183,7 +187,7 @@ def compute_reward_avoidance_index(data_folder, save_path, cue_dict, cue_dicts=N
                 })
 
     if not rows:
-        print("⏭️   No R-A index data computed (check 'In Reward' / 'In platform' columns).")
+        print("[skip] No R-A index data computed (check 'In Reward' / 'In platform' columns).")
         return
 
     df_per_cue = pd.DataFrame(rows)
@@ -240,7 +244,7 @@ def compute_reward_avoidance_index(data_folder, save_path, cue_dict, cue_dicts=N
     plt.tight_layout()
     fig.savefig(os.path.join(save_path, "reward_avoidance_index.svg"), format="svg")
     plt.close(fig)
-    print(f"📄  Reward-Avoidance Index saved: {save_path}")
+    print(f"[ok] Reward-Avoidance Index saved: {save_path}")
 
 
 # ── Runner ─────────────────────────────────────────────────────────────────────
@@ -256,4 +260,4 @@ def run_reward_analysis(data_folder, save_path, cue_dict, cue_dicts=None):
     compute_reward_avoidance_index(
         data_folder, os.path.join(save_path, "reward_avoidance_index"), cue_dict, cue_dicts
     )
-    print("✅  Reward analysis complete.")
+    print("[ok] Reward analysis complete.")

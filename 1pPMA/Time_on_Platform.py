@@ -12,7 +12,7 @@ from utils import (
     load_behavior_fractional, normalize_metadata_treatments,
     load_metadata, treatment_from_mouse,
 )
-from config import CUE_LIGHT_WINDOW, LIGHT_CUES
+from runner import CUE_LIGHT_WINDOW, LIGHT_CUES
 
 
 def run_time_on_platform_analysis(data_folder, save_path, cue_dict, cue_dicts=None):

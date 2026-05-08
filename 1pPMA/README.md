@@ -4,7 +4,7 @@
 
 This pipeline processes behavioral data from variable conflict 1-Port Platform Mediated Avoidance (PMA) experiments recorded in **AnyMaze**. It computes cue-aligned time-on-platform, cue-aligned nosepoke probability, latency to platform, shock outcome classification (Avoided / Escaped / Fully Shocked), total reward consumption, reward delivery during light trials, and the Reward-Avoidance Index — within sessions and across multiple session days — then produces publication-ready SVG figures and summary CSVs.
 
-**You only need to edit one file: `config.py`.** Everything else runs automatically from `runner.py`.
+**You only need to edit one file: `runner.py`.** User settings live at the top, and the same file runs the pipeline.
 
 ---
 
@@ -33,7 +33,6 @@ This pipeline was built on top of the original analysis notebooks developed by *
 
 1. Place all pipeline files in the same folder:
    ```
-   config.py
    runner.py
    utils.py
    Time_on_Platform.py
@@ -44,7 +43,7 @@ This pipeline was built on top of the original analysis notebooks developed by *
    ACROSS_SESSIONS_AUC.py
    ```
 
-2. Open `config.py` in Spyder (or any editor).
+2. Open `runner.py` in Spyder (or any editor).
 
 3. Set `DATA_ROOT` to the full path of your `BehaviorData` folder.
 
@@ -60,8 +59,7 @@ This pipeline was built on top of the original analysis notebooks developed by *
 
 | File | What it does |
 |---|---|
-| `config.py` | **Start here.** All user settings: paths, flags, colors, timing, and reward parameters. Do not edit anything else. |
-| `runner.py` | Entry point. Reads config, loops over sessions, calls each analysis module. |
+| `runner.py` | **Start here.** User settings are at the top; the runner then loops over sessions and calls each analysis module. |
 | `utils.py` | Shared functions: metadata loading, resampling, cue detection, and the core cue-aligned analysis engine. Do not edit unless you know what you are changing. |
 | `Time_on_Platform.py` | Cue-aligned time-on-platform traces and per-mouse light-window AUC computation. |
 | `Nosepokes.py` | Cue-aligned nosepoke probability traces, per-mouse light-window AUC, and full-session binned nosepoke histogram. |
@@ -93,7 +91,7 @@ BehaviorData/
 └── Analysis/                        ← all outputs written here (created automatically)
 ```
 
-The pipeline processes any subfolder of `BehaviorData` whose name starts with `REW` or `VC`, in alphabetical order. Set `SESSION_FILTER = "VC03"` in `config.py` to process only one session.
+The pipeline processes any subfolder of `BehaviorData` whose name starts with `REW` or `VC`, in alphabetical order. Set `SESSION_FILTER = "VC03"` in `runner.py` to process only one session.
 
 ### 3.2 Session folder naming
 
@@ -155,7 +153,7 @@ The following columns are dropped silently if absent:
 | Column | Description |
 |---|---|
 | `behavior_id` | The ID used in CSV filenames (e.g. `10b`, `11a`, `4B`) |
-| `treatment_group` | Group label (e.g. `ctrl`, `KO`) — aliases handled in `config.py` |
+| `treatment_group` | Group label (e.g. `ctrl`, `KO`) — aliases handled in `runner.py` |
 
 ### Optional columns
 
@@ -170,7 +168,7 @@ Column names in the spreadsheet are normalized automatically (lowercased, stripp
 
 ### Treatment group normalization
 
-Raw labels from the spreadsheet are normalized using `TREATMENT_ALIASES` in `config.py`:
+Raw labels from the spreadsheet are normalized using `TREATMENT_ALIASES` in `runner.py`:
 
 ```python
 TREATMENT_ALIASES = {
@@ -185,7 +183,7 @@ Add entries here to map any variant spelling to your canonical label. Animals wh
 
 ## 5. Configuration — Full Reference
 
-Open `config.py`. All user-editable settings are here.
+Open `runner.py`. All user-editable settings are at the top.
 
 ### 5.1 Paths
 
@@ -272,7 +270,7 @@ CUE_DICT_SOURCE = "first_csv"   # "config" | "first_csv" | "per_animal"
 
 `CUE_DICT_SOURCE` controls how trial onset times are determined for every analysis in the pipeline. The three options are:
 
-**`"config"`** — trial onset times are read directly from the `CUE_DICT` dictionary defined below in `config.py`. The same times are applied to every animal in every session. No `downsampled/` folder is needed. This is the most transparent and reproducible option, and is recommended when your protocol uses fixed, known trial timing.
+**`"config"`** — trial onset times are read directly from the `CUE_DICT` dictionary defined below in `runner.py`. The same times are applied to every animal in every session. No `downsampled/` folder is needed. This is the most transparent and reproducible option, and is recommended when your protocol uses fixed, known trial timing.
 
 ```python
 CUE_DICT = {
@@ -360,10 +358,10 @@ At each ITI-end boundary, the pipeline inspects the next 50 samples (~50 seconds
 
 ### 7.4 Cue dictionary resolution
 
-At the start of each session, the pipeline resolves the cue dictionary according to `CUE_DICT_SOURCE` in `config.py`. Three modes are available:
+At the start of each session, the pipeline resolves the cue dictionary according to `CUE_DICT_SOURCE` in `runner.py`. Three modes are available:
 
 **`"config"`**
-`CUE_DICT` from `config.py` is used directly. The same onset times are applied to every animal in every session. Auto-detection is not run and `downsampled/` files are not read for this purpose. This is the most reproducible option.
+`CUE_DICT` from `runner.py` is used directly. The same onset times are applied to every animal in every session. Auto-detection is not run and `downsampled/` files are not read for this purpose. This is the most reproducible option.
 
 **`"first_csv"`**
 The pipeline reads the first available animal's downsampled CSV in the session's `downsampled/` folder, detects ITI boundaries (Section 7.2), and classifies trial types from the 50-sample inspection window (Section 7.3). The resulting dictionary is then shared identically across all other animals in that session. If the `downsampled/` folder does not exist or contains no parseable files, the session is skipped.
@@ -474,7 +472,7 @@ total_reward_uL     = feeder_seconds × FEEDER_RATE_UL_PER_SEC
 total_reward_mL     = total_reward_uL / 1000
 ```
 
-`FEEDER_RATE_UL_PER_SEC` (default: 16 µL/s) is set in `config.py`. Because the signal is fractional after resampling, a sample of 0.6 at a given second contributes 0.6 × 0 (it is below the 0 threshold in the `> 0` test) — however, since feeder states are typically sustained for multiple seconds, partial-second edge effects are negligible in practice.
+`FEEDER_RATE_UL_PER_SEC` (default: 16 µL/s) is set in `runner.py`. Because the signal is fractional after resampling, fractional feeder activity contributes proportionally to the total feeder-active seconds.
 
 One row per animal is written to `reward_summary.csv`. A bar chart (`reward_summary.svg`) shows total mL per animal.
 

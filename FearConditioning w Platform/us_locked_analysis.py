@@ -22,9 +22,7 @@ import utils
 import run_report as rr
 
 
-# =============================================================================
-# US window detection
-# =============================================================================
+# ── US window detection ─────────────────────────────────────────────────────
 
 def _get_us_windows_mode_a(df, time_col, cs_trials, cfg):
     shocker_col = utils.find_shocker_col(df, cfg)
@@ -86,9 +84,7 @@ def _get_us_windows_mode_b(cs_trials, us_duration_s):
     return us_windows, "last_2s_of_CS+"
 
 
-# =============================================================================
-# Per-file processing
-# =============================================================================
+# ── Per-file processing ─────────────────────────────────────────────────────
 
 def _process_file(csv_path, meta, day_dir, cfg, run_log, report=None):
     test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
@@ -237,9 +233,7 @@ def _process_file(csv_path, meta, day_dir, cfg, run_log, report=None):
     return rows
 
 
-# =============================================================================
-# Data collection
-# =============================================================================
+# ── Data collection ─────────────────────────────────────────────────────────
 
 def _collect_day(day_dir, meta, cfg, run_log, report=None):
     suffix   = cfg["csv_suffix"]
@@ -251,9 +245,7 @@ def _collect_day(day_dir, meta, cfg, run_log, report=None):
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
-# =============================================================================
-# Duplicate-ID warning helper
-# =============================================================================
+# ── Duplicate-ID warning helper ─────────────────────────────────────────────
 
 def _duplicate_animal_id_warning(df):
     if df.empty or "cohort_id" not in df.columns or "animal_id" not in df.columns:
@@ -301,9 +293,7 @@ def _apply_plot_trial_caps(df, cfg):
               .copy())
 
 
-# =============================================================================
-# Heatmap
-# =============================================================================
+# ── Heatmap ─────────────────────────────────────────────────────────────────
 
 def _make_heatmap(df, treatment, out_dir, cfg, label_suffix="",
                   row_order=None, fig=None, ax=None, show_cbar=True):
@@ -352,9 +342,7 @@ def _make_heatmap(df, treatment, out_dir, cfg, label_suffix="",
     return fig, ax, hm
 
 
-# =============================================================================
-# Combined tiled figure
-# =============================================================================
+# ── Combined tiled figure ───────────────────────────────────────────────────
 
 def _make_tiled_treatment_figure(df_trt, treatment, out_dir, cfg):
     if df_trt.empty:
@@ -428,9 +416,7 @@ def _make_tiled_treatment_figure(df_trt, treatment, out_dir, cfg):
     utils.save_fig(fig, trt_dir / f"us_locked_heatmap_{treatment}_tiled.svg")
 
 
-# =============================================================================
-# Prism export
-# =============================================================================
+# ── Prism export ────────────────────────────────────────────────────────────
 
 def _prism_export(df, out_dir, tag, subject_col="animal_id"):
     df = df.copy()
@@ -451,9 +437,7 @@ def _prism_export(df, out_dir, tag, subject_col="animal_id"):
     print(f"[ok] Prism table saved: {out_path}")
 
 
-# =============================================================================
-# Shock avoidance summary
-# =============================================================================
+# ── Shock avoidance summary ─────────────────────────────────────────────────
 
 def _shock_avoidance(df, out_dir, tag):
     avoided = df[df["platform_pct"] >= 100.0].copy()
@@ -465,9 +449,7 @@ def _shock_avoidance(df, out_dir, tag):
     print(f"[ok] Shock avoidance summary saved: {out_path}")
 
 
-# =============================================================================
-# Legacy txt run report (kept for backward compatibility)
-# =============================================================================
+# ── Legacy txt run report ───────────────────────────────────────────────────
 
 def _write_run_report(out_dir, cfg, run_log):
     report_path = out_dir / "us_locked_run_report.txt"
@@ -514,9 +496,7 @@ def _write_run_report(out_dir, cfg, run_log):
     print(f"[ok] Run report saved: {report_path}")
 
 
-# =============================================================================
-# Entry point
-# =============================================================================
+# ── Entry point ─────────────────────────────────────────────────────────────
 
 def run(cfg, report=None):
     combined_root = Path(cfg["analysis_out"]) / "US_lock_plttime"
