@@ -35,15 +35,14 @@ N_WORKERS = 5
 # Use raw strings (the r prefix) to avoid issues with backslashes on Windows.
 
 BEHAVIORDATA_DIRS = [
-    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData",
-    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 2\BehaviorData"
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData"
 ]
 
 # Top-level folder where combined across-cohort outputs are written.
 # Per-session outputs are always written inside their own BehaviorData folder.
 # Cohort-specific across-session outputs go to:
 #   <BehaviorData>/<cohort_id>/Analysis/<subfolder>/
-ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis555"
+ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis5"
 
 
 # ── Treatment group configuration ────────────────────────────────────────────
@@ -88,8 +87,7 @@ RUN_SPEED           = True     # CS-locked speed analysis
 #
 # "ttl"         — use CS+/CS- ON/OFF activated columns (brief TTL pulses).
 # "tone_status" — use continuous tone-status columns (value = 1 while tone
-#                 is playing, 0 otherwise). More reliable when TTL pulses are
-#                 brief or inconsistent across recording boxes.
+#                 is playing, 0 otherwise).
 # "auto"        — try tone_status first; fall back to TTL if not found.
 #                 Recommended when you are unsure which columns are present,
 #                 or when your dataset mixes export configurations.
@@ -272,6 +270,11 @@ SPEED_SUBFOLDER  = "speed"   # subfolder name used inside Analysis/
 SPEED_PRE_S  = 30.0
 SPEED_POST_S = 60.0
 
+# Speed analysis always writes one combined parquet table for downstream
+# analysis. Set this to True only when you also want Excel workbooks for
+# manual visual checks.
+SPEED_WRITE_EXCEL = False
+
 # ── Prism export ─────────────────────────────────────────────────────────────
 #
 # When True, writes wide-format Prism-ready Excel tables for every enabled
@@ -338,6 +341,7 @@ def main():
         speed_subfolder         = SPEED_SUBFOLDER,
         speed_pre_bins          = int(round(SPEED_PRE_S  * 10)),  # seconds → 100ms bins
         speed_post_bins         = int(round(SPEED_POST_S * 10)),
+        speed_write_excel       = SPEED_WRITE_EXCEL,
         
         # run toggles (used by run_report)
         run_sanity_check        = RUN_SANITY_CHECK,

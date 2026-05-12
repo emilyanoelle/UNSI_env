@@ -608,7 +608,8 @@ def write_excel_report(report: dict, out_dir: Path):
              ("Pre-onset (s)",   cfg.get("speed_pre_bins",  300) / 10),
              ("Post-onset (s)",  cfg.get("speed_post_bins", 600) / 10),
              ("Bin width",       "100 ms"),
-             ("Prism export",    "n/a — outputs are Excel workbooks directly")],
+             ("Canonical output", "speed_trial_windows.parquet"),
+             ("Optional Excel workbooks", cfg.get("speed_write_excel", False))],
         )
 
     ran_this_session = set(sheets_to_write.keys())

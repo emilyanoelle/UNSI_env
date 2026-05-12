@@ -91,7 +91,11 @@ def _downsample(df: pd.DataFrame, time_col: str) -> pd.DataFrame:
     df = df.copy()
     df[time_col] = pd.to_timedelta(df[time_col].astype(float), unit="s")
     df = df.set_index(time_col)
-    ds = df.resample("100ms").mean()
+    resampler = df.resample("100ms")
+    ds = resampler.mean(numeric_only=True)
+    nonnumeric_cols = [c for c in df.columns if c not in ds.columns]
+    if nonnumeric_cols:
+        ds = ds.join(resampler[nonnumeric_cols].first())
     ds = ds.reset_index()
     ds[time_col] = ds[time_col].dt.total_seconds()
     return ds

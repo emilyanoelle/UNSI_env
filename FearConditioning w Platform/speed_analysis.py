@@ -11,15 +11,14 @@ Pass 1 — Parallel, fully in-memory:
     not intermediate data).
 
 Pass 2 — Per-cohort aggregation:
-    Groups Pass 1 rows by treatment group and writes per-group Excel
-    workbooks, a tiled 2x2 distance summary SVG, and a tiled dual-axis
-    total-movement SVG into:
+    Groups Pass 1 rows by BehaviorData folder and writes cohort-level SVGs into:
             <BehaviorData>/Analysis/<subfolder>/
+    Optional Excel workbooks are written only when cfg["speed_write_excel"]
+    is True.
 
 Pass 3 — Cross-cohort aggregation:
-    Combines per-group Excel workbooks across all BehaviorData folders and
-    writes combined outputs, a cross-cohort tiled 2x2 distance SVG, and a
-    tiled dual-axis total-movement SVG into:
+    Writes one canonical concatenated parquet table, optional combined Excel
+    workbooks, and cross-cohort SVGs into:
             <ANALYSIS_OUTPUT_DIR>/<subfolder>/
 """
 
@@ -86,7 +85,11 @@ def _downsample(df: pd.DataFrame, time_col: str) -> pd.DataFrame:
     df = df.copy()
     df[time_col] = pd.to_timedelta(df[time_col].astype(float), unit="s")
     df = df.set_index(time_col)
-    df_mean = df.resample("100ms").mean()
+    resampler = df.resample("100ms")
+    df_mean = resampler.mean(numeric_only=True)
+    nonnumeric_cols = [c for c in df.columns if c not in df_mean.columns]
+    if nonnumeric_cols:
+        df_mean = df_mean.join(resampler[nonnumeric_cols].first())
     df_mean = df_mean.reset_index()
     df_mean[time_col] = df_mean[time_col].dt.total_seconds()
     return df_mean
@@ -215,6 +218,7 @@ def _process_file(csv_path: Path, meta, day_dir: Path, cfg: dict) -> tuple:
             _source_csv=csv_path.name, file_name=csv_path.name,
             start_time_s=start_time,
             cs_type=f"{cs_type_prefix}_{count}",
+            trial_index=count,
             trial_kind=trial_kind,
             distance_m=distance_m,
             interval_start_s=interval_start,
@@ -286,6 +290,9 @@ def _collect_all_parallel(cfg, report=None):
                 print(f"  [error] {csv_path.name} raised an exception: {exc}")
                 continue
 
+            for row in rows:
+                row["source_behaviordata"] = str(bd)
+                row["source_behaviordata_name"] = bd.name
             rows_by_bd[bd].extend(rows)
 
             if report is not None:
@@ -778,14 +785,56 @@ def make_tiled_distance_figure(df_all, cfg, out_path, figure_title=""):
     utils.save_fig(fig, out_path)
 
 
-# ── Pass 2 — per-cohort Excel + tiled figure (unchanged logic) ────────────────
+# ── Output helpers ────────────────────────────────────────────────────────────
+
+def _speed_dataframe(rows, cfg):
+    df = pd.DataFrame(rows) if rows else pd.DataFrame()
+    if df.empty:
+        return df
+
+    bin_cols = _bin_columns(cfg["speed_pre_bins"], cfg["speed_post_bins"])
+    leading_cols = [
+        "source_behaviordata", "source_behaviordata_name",
+        "cohort_id", "test_date", "day", "context", "session_label",
+        "animal_id", "behavior_id", "treatment_group",
+        "file_name", "_source_csv", "_day_folder",
+        "trial_kind", "cs_type", "trial_index", "start_time_s",
+        "distance_m", "interval_start_s", "interval_end_s",
+        "interval_distance_m", "session_distance_m", "n_valid_bins",
+    ]
+    ordered = [c for c in leading_cols if c in df.columns]
+    ordered.extend([c for c in bin_cols if c in df.columns])
+    ordered.extend([c for c in df.columns if c not in ordered])
+    return df[ordered]
+
+
+def _write_speed_parquet(df_all, cfg):
+    if df_all.empty:
+        print("  [warn] No speed data found; skipping speed_trial_windows.parquet.")
+        return
+
+    out_dir = cfg["analysis_out"] / cfg["speed_subfolder"]
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_path = out_dir / "speed_trial_windows.parquet"
+    try:
+        df_all.to_parquet(out_path, index=False)
+    except ImportError as e:
+        raise RuntimeError(
+            "Speed analysis writes parquet by default. Install pyarrow "
+            "or fastparquet, then rerun the pipeline."
+        ) from e
+    print(f"  [ok] Speed parquet saved: {out_path}")
+
 
 def _write_group_excel(df_all, out_path, bin_cols):
     if df_all.empty:
         return
     df_cs      = df_all[df_all["trial_kind"].isin(["CS+","CS-"])].copy()
     output_cols = [c for c in
-                   ["file_name","animal_id","treatment_group","start_time_s","cs_type"] + bin_cols
+                   ["source_behaviordata","cohort_id","test_date","day",
+                    "context","session_label","file_name","animal_id",
+                    "behavior_id","treatment_group","start_time_s",
+                    "trial_kind","cs_type","trial_index"] + bin_cols
                    if c in df_cs.columns]
     df_cs_plus  = df_cs[df_cs["cs_type"].str.contains(r"\+", na=False)].copy()
     df_cs_minus = df_cs[df_cs["cs_type"].str.contains(r"\-", na=False)].copy()
@@ -809,18 +858,28 @@ def _write_distance_excel(df_all, out_path):
     if df_all.empty:
         return
     dist_cols = [c for c in
-                 ["file_name","animal_id","treatment_group","start_time_s",
-                  "cs_type","trial_kind","distance_m","n_valid_bins"]
+                 ["source_behaviordata","cohort_id","test_date","day",
+                  "context","session_label","file_name","animal_id",
+                  "behavior_id","treatment_group","start_time_s",
+                  "cs_type","trial_index","trial_kind","distance_m",
+                  "interval_start_s","interval_end_s",
+                  "interval_distance_m","session_distance_m","n_valid_bins"]
                  if c in df_all.columns]
     df_plus   = df_all[df_all["trial_kind"] == "CS+"][dist_cols].copy()
     df_minus  = df_all[df_all["trial_kind"] == "CS-"][dist_cols].copy()
     df_iti    = df_all[df_all["trial_kind"] == "ITI"][dist_cols].copy()
     summary_rows = []
-    for (animal, kind), grp in df_all.groupby(["animal_id","trial_kind"], sort=False):
+    group_cols = [c for c in
+                  ["source_behaviordata","cohort_id","animal_id","trial_kind"]
+                  if c in df_all.columns]
+    for keys, grp in df_all.groupby(group_cols, sort=False):
+        if not isinstance(keys, tuple):
+            keys = (keys,)
+        key_data = dict(zip(group_cols, keys))
         d = grp["distance_m"].dropna()
         summary_rows.append(dict(
-            animal_id=animal, treatment_group=grp["treatment_group"].iloc[0],
-            trial_kind=kind, n_trials=len(d),
+            **key_data, treatment_group=grp["treatment_group"].iloc[0],
+            n_trials=len(d),
             mean_distance_m=round(d.mean(), 6) if len(d) else np.nan,
             sd_distance_m=round(d.std(ddof=1), 6) if len(d) > 1 else np.nan,
         ))
@@ -843,11 +902,12 @@ def _write_cohort_outputs(bd, cfg, cohort_rows):
         return
     out_dir = bd / "Analysis" / subfolder
     out_dir.mkdir(parents=True, exist_ok=True)
-    for group in cfg["canonical_groups"]:
-        df_grp = df_all[df_all["treatment_group"] == group]
-        if df_grp.empty: continue
-        _write_group_excel(df_grp, out_dir / f"{group}_combined_output.xlsx", bin_cols)
-        _write_distance_excel(df_grp, out_dir / f"{group}_distance_output.xlsx")
+    if cfg.get("speed_write_excel", False):
+        for group in cfg["canonical_groups"]:
+            df_grp = df_all[df_all["treatment_group"] == group]
+            if df_grp.empty: continue
+            _write_group_excel(df_grp, out_dir / f"{group}_combined_output.xlsx", bin_cols)
+            _write_distance_excel(df_grp, out_dir / f"{group}_distance_output.xlsx")
     make_tiled_distance_figure(df_all, cfg,
                                 out_path=out_dir / "distance_across_sessions.svg",
                                 figure_title=f"Distance Summary — {bd.name}")
@@ -858,56 +918,26 @@ def _write_cohort_outputs(bd, cfg, cohort_rows):
     )
 
 
-# ── Pass 3 — cross-cohort (unchanged logic) ───────────────────────────────────
+# ── Optional Excel exports ────────────────────────────────────────────────────
 
-def _write_combined_outputs(cfg):
+def _write_combined_excel_outputs(df_all, cfg):
+    if not cfg.get("speed_write_excel", False):
+        print("  Skipping optional speed Excel workbooks (SPEED_WRITE_EXCEL = False).")
+        return
+    if df_all.empty:
+        print("  [warn] No speed data found for combined Excel outputs; skipping.")
+        return
+
     subfolder = cfg["speed_subfolder"]
+    bin_cols  = _bin_columns(cfg["speed_pre_bins"], cfg["speed_post_bins"])
     out_dir   = cfg["analysis_out"] / subfolder
     out_dir.mkdir(parents=True, exist_ok=True)
     for group in cfg["canonical_groups"]:
-        sheet_data = {}
-        for bd in cfg["behaviordata_dirs"]:
-            excel_path = bd / "Analysis" / subfolder / f"{group}_combined_output.xlsx"
-            if not excel_path.exists():
-                print(f"  [warn] Missing cohort Excel: {excel_path}; skipping.")
-                continue
-            xls = pd.ExcelFile(excel_path)
-            for sheet_name in xls.sheet_names:
-                df = xls.parse(sheet_name)
-                df["_source_cohort"] = bd.name
-                sheet_data.setdefault(sheet_name, []).append(df)
-        if not sheet_data: continue
-        out_path = out_dir / f"{group}_combined_output.xlsx"
-        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            for sheet_name, dfs in sheet_data.items():
-                pd.concat(dfs, ignore_index=True).to_excel(
-                    writer, sheet_name=_sanitize_sheet(sheet_name), index=False)
-        print(f"  [ok] Cross-cohort Excel saved: {out_path}")
-
-
-def _write_combined_distance_outputs(cfg):
-    subfolder = cfg["speed_subfolder"]
-    out_dir   = cfg["analysis_out"] / subfolder
-    out_dir.mkdir(parents=True, exist_ok=True)
-    for group in cfg["canonical_groups"]:
-        sheet_data = {}
-        for bd in cfg["behaviordata_dirs"]:
-            excel_path = bd / "Analysis" / subfolder / f"{group}_distance_output.xlsx"
-            if not excel_path.exists():
-                print(f"  [warn] Missing distance Excel: {excel_path}; skipping.")
-                continue
-            xls = pd.ExcelFile(excel_path)
-            for sheet_name in xls.sheet_names:
-                df = xls.parse(sheet_name)
-                df["_source_cohort"] = bd.name
-                sheet_data.setdefault(sheet_name, []).append(df)
-        if not sheet_data: continue
-        out_path = out_dir / f"{group}_distance_output.xlsx"
-        with pd.ExcelWriter(out_path, engine="openpyxl") as writer:
-            for sheet_name, dfs in sheet_data.items():
-                pd.concat(dfs, ignore_index=True).to_excel(
-                    writer, sheet_name=_sanitize_sheet(sheet_name), index=False)
-        print(f"  [ok] Cross-cohort distance Excel saved: {out_path}")
+        df_grp = df_all[df_all["treatment_group"] == group]
+        if df_grp.empty:
+            continue
+        _write_group_excel(df_grp, out_dir / f"{group}_combined_output.xlsx", bin_cols)
+        _write_distance_excel(df_grp, out_dir / f"{group}_distance_output.xlsx")
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────
@@ -915,26 +945,27 @@ def _write_combined_distance_outputs(cfg):
 def run(cfg: dict, report=None):
     print("  Pass 1: collecting all CSVs in parallel...")
     rows_by_bd = _collect_all_parallel(cfg, report=report)
+    all_rows = [r for rows in rows_by_bd.values() for r in rows]
+    df_all = _speed_dataframe(all_rows, cfg)
 
     print("  Pass 2: aggregating within each cohort...")
     for bd in cfg["behaviordata_dirs"]:
         _write_cohort_outputs(bd, cfg, rows_by_bd.get(bd, []))
 
-    print("  Pass 3: combining across cohorts...")
-    _write_combined_outputs(cfg)
-    _write_combined_distance_outputs(cfg)
+    print("  Pass 3: writing combined speed outputs...")
+    _write_speed_parquet(df_all, cfg)
+    _write_combined_excel_outputs(df_all, cfg)
 
-    all_rows = [r for rows in rows_by_bd.values() for r in rows]
     subfolder = cfg["speed_subfolder"]
     out_dir   = cfg["analysis_out"] / subfolder
     make_tiled_distance_figure(
-        pd.DataFrame(all_rows) if all_rows else pd.DataFrame(),
+        df_all,
         cfg,
         out_path=out_dir / "distance_across_sessions_combined.svg",
         figure_title="Distance Summary — All Cohorts Combined",
     )
     make_total_movement_dual_axis_figure(
-        pd.DataFrame(all_rows) if all_rows else pd.DataFrame(),
+        df_all,
         cfg,
         out_path=out_dir / "percent_total_movement_dual_axis_combined.svg",
         figure_title="Total Movement Summary — All Cohorts Combined",

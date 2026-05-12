@@ -99,12 +99,12 @@ def test_speed_downsample_handles_nonnumeric_columns():
     assert "notes" in downsampled.columns
 
 
-def test_speed_trial_onsets_are_detected_on_raw_data():
+def test_speed_trial_onsets_are_detected_on_downsampled_data():
     _, speed_analysis = load_pipeline_modules()
     df_raw = pd.DataFrame({
         "time": [0.00, 0.08, 0.11, 0.30],
         "speed": [1.0, 2.0, 3.0, 4.0],
-        "csplus_on_activated": [0, 1, 0, 0],
+        "csplus_on_activated": [0, 0, 1, 0],
         "csplus_off_activated": [0, 0, 0, 1],
         "csminus_on_activated": [0, 0, 0, 0],
         "csminus_off_activated": [0, 0, 0, 0],
@@ -116,9 +116,61 @@ def test_speed_trial_onsets_are_detected_on_raw_data():
     }
     df_ds = speed_analysis._downsample(df_raw, "time")
 
-    cs_plus_idx, cs_minus_idx = speed_analysis._find_trial_onsets(
-        df_raw, df_ds, "time", cfg)
+    cs_plus_idx, cs_minus_idx, iti_idx = speed_analysis._find_trial_onsets(
+        df_ds, "time", cfg)
 
     assert cs_plus_idx == [1]
     assert cs_minus_idx == []
+    assert iti_idx == []
     assert df_ds.loc[cs_plus_idx[0], "time"] == pytest.approx(0.1)
+
+
+def test_speed_dataframe_keeps_identifiers_before_bin_columns():
+    _, speed_analysis = load_pipeline_modules()
+    rows = [{
+        "Bin0": 1.0,
+        "trial_kind": "CS+",
+        "cs_type": "CS+_1",
+        "trial_index": 1,
+        "source_behaviordata": "BehaviorData",
+        "cohort_id": "cohort-a",
+        "animal_id": "mouse-1",
+    }]
+    cfg = {"speed_pre_bins": 0, "speed_post_bins": 0}
+
+    df = speed_analysis._speed_dataframe(rows, cfg)
+
+    assert df.columns.tolist() == [
+        "source_behaviordata",
+        "cohort_id",
+        "animal_id",
+        "trial_kind",
+        "cs_type",
+        "trial_index",
+        "Bin0",
+    ]
+
+
+def test_write_speed_parquet_writes_single_combined_table(tmp_path):
+    _, speed_analysis = load_pipeline_modules()
+    df = pd.DataFrame({
+        "source_behaviordata": ["BehaviorData"],
+        "cohort_id": ["cohort-a"],
+        "animal_id": ["mouse-1"],
+        "trial_kind": ["CS+"],
+        "cs_type": ["CS+_1"],
+        "trial_index": [1],
+        "Bin0": [1.25],
+    })
+    cfg = {
+        "analysis_out": tmp_path,
+        "speed_subfolder": "speed",
+    }
+
+    speed_analysis._write_speed_parquet(df, cfg)
+
+    out_path = tmp_path / "speed" / "speed_trial_windows.parquet"
+    assert out_path.exists()
+    saved = pd.read_parquet(out_path)
+    assert saved.loc[0, "trial_kind"] == "CS+"
+    assert saved.loc[0, "Bin0"] == pytest.approx(1.25)

@@ -433,9 +433,13 @@ SPEED_SUBFOLDER = "speed"
 
 SPEED_PRE_S  = 30.0
 SPEED_POST_S = 60.0
+
+SPEED_WRITE_EXCEL = False
 ```
 
 Speed analysis extracts a window around each CS onset and bins it at 100 ms. With the defaults above, each trial window includes 30 seconds before onset and 60 seconds after onset.
+
+Speed analysis always writes one combined parquet table named `speed_trial_windows.parquet` in the combined speed output folder. Set `SPEED_WRITE_EXCEL = True` only when you also want the treatment-specific Excel workbooks for manual inspection.
 
 ---
 
@@ -850,6 +854,18 @@ distance_m = sum(valid_speed_bins_m_per_s) * 0.1
 
 NaN speed bins are ignored rather than filled with zero. Cohort and combined figures average per animal first so animals with more trials do not dominate the group mean.
 
+#### Main data output
+
+The primary speed-analysis data output is a single concatenated parquet table:
+
+```text
+<ANALYSIS_OUTPUT_DIR>/speed/speed_trial_windows.parquet
+```
+
+Each row is one extracted CS+, CS-, or ITI window. Identifier columns such as `source_behaviordata` (the source folder path), `cohort_id`, `test_date`, `day`, `session_label`, `animal_id`, `behavior_id`, `treatment_group`, `trial_kind`, `cs_type`, `trial_index`, and `file_name` make it possible to filter the one table back down to any cohort, session, animal, treatment group, or trial type. The `Bin...` columns hold the 100 ms speed bins around the window onset.
+
+If `SPEED_WRITE_EXCEL = True`, the pipeline also writes the older treatment-specific Excel workbooks for visual/manual checks. These Excel files are optional exports; the analysis no longer depends on reading them back in.
+
 ### 9.6 Event Raster Analysis
 
 This analysis draws per-session event timelines so trial timing and state signals can be checked visually.
@@ -938,10 +954,10 @@ BehaviorData/
     │   ├── eee_<cohort_id>_stacked_by_sex_treatment.svg      ← if EEE_BY_SEX = True
     │   └── eee_prism_ready.xlsx                            ← if PRISM_EXPORT = True
     └── speed/
-        ├── <treatment>_combined_output.xlsx
-        ├── <treatment>_distance_output.xlsx
         ├── distance_across_sessions.svg
-        └── percent_total_movement_dual_axis.svg
+        ├── percent_total_movement_dual_axis.svg
+        ├── <treatment>_combined_output.xlsx      ← if SPEED_WRITE_EXCEL = True
+        └── <treatment>_distance_output.xlsx      ← if SPEED_WRITE_EXCEL = True
 ```
 
 ### 10.3 Combined across-cohort outputs
@@ -970,10 +986,11 @@ Analysis/
 │   ├── eee_stacked_by_sex_treatment.svg      ← if EEE_BY_SEX = True
 │   └── eee_prism_ready.xlsx
 ├── speed/
-│   ├── <treatment>_combined_output.xlsx
-│   ├── <treatment>_distance_output.xlsx
+│   ├── speed_trial_windows.parquet
 │   ├── distance_across_sessions_combined.svg
-│   └── percent_total_movement_dual_axis_combined.svg
+│   ├── percent_total_movement_dual_axis_combined.svg
+│   ├── <treatment>_combined_output.xlsx          ← if SPEED_WRITE_EXCEL = True
+│   └── <treatment>_distance_output.xlsx          ← if SPEED_WRITE_EXCEL = True
 └── US_lock_plttime/
     ├── us_locked_all_days_concat.csv
     ├── <treatment>/

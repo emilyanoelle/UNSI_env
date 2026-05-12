@@ -288,21 +288,30 @@ def find_metadata_for_behavior(meta_df: pd.DataFrame, raw_bid: str) -> pd.DataFr
     meta_norm  = meta_beh.str.lower().str.strip()
     meta_clean = meta_norm.str.replace(r"[^a-z0-9]", "", regex=True)
 
+    def _matched_rows(mask):
+        matches = meta_df[mask]
+        if len(matches) > 1:
+            raise ValueError(
+                f"Ambiguous metadata match for behavior_id '{raw_bid}': "
+                f"{len(matches)} rows matched. Make behavior_id values unique."
+            )
+        return matches
+
     mask = meta_norm == bid_norm
     if mask.any():
-        return meta_df[mask]
+        return _matched_rows(mask)
 
     cleaned = re.sub(r"[^a-z0-9]", "", bid_norm)
     if cleaned:
         mask = meta_clean == cleaned
         if mask.any():
-            return meta_df[mask]
+            return _matched_rows(mask)
 
     m = re.match(r"(.+?)(-\d+|-[a-z0-9]+)$", bid_norm)
     if m:
         mask = meta_norm == m.group(1)
         if mask.any():
-            return meta_df[mask]
+            return _matched_rows(mask)
 
     mnum = re.match(r"^0*([0-9]+)([a-z])?$", bid_norm)
     if mnum:
@@ -310,22 +319,22 @@ def find_metadata_for_behavior(meta_df: pd.DataFrame, raw_bid: str) -> pd.DataFr
         for suffix in ([f"-{num}", num] + ([f"{num}{letter}", ] if letter else [])):
             mask = meta_norm.str.endswith(suffix)
             if mask.any():
-                return meta_df[mask]
+                return _matched_rows(mask)
         if letter:
             mask = meta_clean.str.endswith(f"{num}{letter}")
             if mask.any():
-                return meta_df[mask]
+                return _matched_rows(mask)
 
     pat  = re.compile(r"(^|[-_])" + re.escape(bid_norm) + r"($|[-_])")
     mask = meta_norm.apply(lambda s: bool(pat.search(s)))
     if mask.any():
-        return meta_df[mask]
+        return _matched_rows(mask)
 
     if cleaned:
         for fn in [meta_clean.str.startswith, meta_clean.str.endswith]:
             mask = fn(cleaned)
             if mask.any():
-                return meta_df[mask]
+                return _matched_rows(mask)
 
     return pd.DataFrame()
 
