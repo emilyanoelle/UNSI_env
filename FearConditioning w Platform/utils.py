@@ -344,6 +344,8 @@ def normalize_trial_type(v: str) -> str:
         return "CS-"
     if s in {"iti", "intertrialinterval", "inter_trial_interval"}:
         return "ITI"
+    if s in {"pre-trial", "pretrial", "pretrialperiod", "baseline"}:
+        return "Pre-trial"
     return "unknown"
 
 

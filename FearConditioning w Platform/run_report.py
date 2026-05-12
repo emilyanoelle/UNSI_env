@@ -49,6 +49,7 @@ ANALYSIS_KEYS = {
     "platform_latency": "Platform Latency",
     "us_locked":        "US Locked",
     "eee":              "EEE",
+    "event_raster":     "Event Rasters",
     "speed":            "Speed",
 }
 
@@ -61,6 +62,7 @@ _TAB_COLORS = {
     "Platform Latency":   "833C00",
     "US Locked":          "4472C4",
     "EEE":                "7030A0",
+    "Event Rasters":      "C65911",
     "Speed":              "1F6B3A",
     "Excluded Subjects":  "C00000",
     "Per-Subject Log":    "595959",
@@ -75,6 +77,7 @@ _SHEET_ORDER = [
     "Platform Latency",
     "US Locked",
     "EEE",
+    "Event Rasters",
     "Speed",
     "Excluded Subjects",
     "Per-Subject Log",
@@ -276,6 +279,7 @@ def _overview_sheet(wb, report: dict, existing_ts: dict, ran_this_session: set):
         ("platform_latency", "Platform Latency", "Platform Latency"),
         ("us_locked",        "US Locked",        "US Locked"),
         ("eee",              "EEE",              "EEE"),
+        ("event_raster",     "Event Rasters",    "Event Rasters"),
         ("speed",            "Speed",            "Speed"),
     ]
 
@@ -347,6 +351,7 @@ def _overview_sheet(wb, report: dict, existing_ts: dict, ran_this_session: set):
         ("Freezing by litter",       cfg.get("freezing_by_litter")),
         ("Platform by sex",          cfg.get("platform_by_sex")),
         ("EEE by sex",               cfg.get("eee_by_sex")),
+        ("Event raster subfolder",   cfg.get("event_raster_subfolder")),
     ]
     for k, v in settings:
         _cell(ws, r, 1, str(k), bg=_C["header_light"], bold=True)
@@ -583,9 +588,19 @@ def write_excel_report(report: dict, out_dir: Path):
              ("By sex",       cfg.get("eee_by_sex")),
              ("Prism export", cfg.get("prism_export")),
              ("Outcome logic",
-              "evade=100% on platform | endure=0% | escape=mounted during US")],
+               "evade=100% on platform | endure=0% | escape=mounted during US")],
         )
-        
+
+    if cfg.get("run_event_raster"):
+        sheets_to_write["Event Rasters"] = (
+            "event_raster",
+            [("Subfolder", cfg.get("event_raster_subfolder")),
+             ("Output",    "pass-1 per-session SVG only"),
+             ("Tracks",    "Freezing | Platform | CS+ | CS- | US"),
+             ("US fallback",
+              "preferred configured source, then alternate raw source, then last US_DURATION_S of CS+")],
+        )
+
     if cfg.get("run_speed"):
         sheets_to_write["Speed"] = (
             "speed",

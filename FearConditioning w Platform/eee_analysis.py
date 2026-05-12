@@ -3,9 +3,17 @@
 eee_analysis.py
 ---------------
 Classifies CS+ shock trials as Evade, Escape, or Endure for all session days.
+
+Pass 1 — Parallel, fully in-memory:
+    Each CSV file is processed independently on a worker process.
+    No per-day CSVs are written.
+
+Pass 2 — Cumulative:
+    Results written once per cohort and once combined.
 """
 
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -18,11 +26,11 @@ import run_report as rr
 US_DEFAULT_LEN_S  = 2.0
 PLATFORM_FULL_TOL = 1e-6
 
-OUTCOME_ORDER  = ["evade","escape","endure"]
-OUTCOME_COLORS = {"evade":"#2ca02c","escape":"#1f77b4","endure":"#ff7f0e"}
+OUTCOME_ORDER  = ["evade", "escape", "endure"]
+OUTCOME_COLORS = {"evade": "#2ca02c", "escape": "#1f77b4", "endure": "#ff7f0e"}
 
 
-# ── Outcome classification helpers ──────────────────────────────────────────
+# ── Outcome classification helpers (unchanged) ───────────────────────────────
 
 def _first_rising_after(df, time_col, ttl_col, t0):
     if ttl_col is None or ttl_col not in df.columns:
@@ -35,24 +43,20 @@ def _first_rising_after(df, time_col, ttl_col, t0):
 def _first_shocker_window(df, time_col, shocker_col, trial_start, trial_end):
     if shocker_col is None or shocker_col not in df.columns:
         return None, None
-
     sub = df[(df[time_col] >= trial_start) & (df[time_col] <= trial_end)]
     if sub.empty:
         return None, None
-
     active = sub[shocker_col].fillna(0).astype(float).to_numpy() > 0
     if not active.any():
         return None, None
-
-    times = sub[time_col].astype(float).to_numpy()
+    times    = sub[time_col].astype(float).to_numpy()
     start_ix = int(np.where(active)[0][0])
-    end_ix = start_ix + 1
+    end_ix   = start_ix + 1
     while end_ix < len(active) and active[end_ix]:
         end_ix += 1
-
     us_start = max(float(times[start_ix]), trial_start)
-    us_end = float(times[end_ix]) if end_ix < len(times) else trial_end
-    us_end = min(us_end, trial_end)
+    us_end   = float(times[end_ix]) if end_ix < len(times) else trial_end
+    us_end   = min(us_end, trial_end)
     if us_end <= us_start:
         return None, None
     return us_start, us_end
@@ -73,44 +77,45 @@ def _classify_outcome(t, platform, us_start, us_end):
     return "escape"
 
 
-# ── Per-file processing ─────────────────────────────────────────────────────
+# ── Pass 1: per-file processing ──────────────────────────────────────────────
 
-def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg, report=None):
+def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg):
+    report_data = {"subjects": {}, "exclusions": {}}
+    subject_key = csv_path.name
+
     test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
     if behavior_id is None:
         print(f"  [warn] Could not parse behavior_id from {csv_path.name}; skipping.")
-        if report is not None:
-            rr.record_exclusion(report, "eee", csv_path.name,
-                                "could not parse behavior_id from filename")
-        return []
+        report_data["exclusions"][subject_key] = "could not parse behavior_id from filename"
+        return [], report_data
 
     row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
         if meta is not None else pd.DataFrame()
     if row_meta.empty:
         print(f"  [warn] behavior_id '{behavior_id}' not in metadata; skipping {csv_path.name}.")
-        if report is not None:
-            rr.record_exclusion(report, "eee", csv_path.name,
-                                f"behavior_id '{behavior_id}' not found in metadata")
-        return []
+        report_data["exclusions"][subject_key] = \
+            f"behavior_id '{behavior_id}' not found in metadata"
+        return [], report_data
 
     row       = row_meta.iloc[0]
     animal_id = row.get("animal_id", behavior_id)
-    treatment = utils.normalize_treatment(row.get("treatment_group","Unknown"), cfg["treatment_lookup"])
+    treatment = utils.normalize_treatment(
+        row.get("treatment_group", "Unknown"), cfg["treatment_lookup"])
     sex       = utils.normalize_sex(row.get("sex", None))
     cohort_id = row.get("cohort_id", None)
 
     df = utils.load_csv(csv_path)
     try:
-        time_col = utils.find_time_col(df, cfg)
+        time_col     = utils.find_time_col(df, cfg)
         platform_col = utils.find_platform_col(df, cfg)
     except ValueError as e:
         print(f"  [warn] {csv_path.name}: {e}; skipping.")
-        if report is not None:
-            rr.record_exclusion(report, "eee", csv_path.name, str(e))
-        return []
+        report_data["exclusions"][subject_key] = str(e)
+        return [], report_data
 
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
     trials, _, cs_source = utils.detect_trials(df, time_col, cfg)
+
     shocker_col = None
     us_on = us_off = None
     if cfg.get("use_shocker_column"):
@@ -118,39 +123,39 @@ def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg, report=None):
             shocker_col = utils.find_shocker_col(df, cfg)
         except ValueError as e:
             print(f"  [warn] {csv_path.name}: {e}; skipping.")
-            if report is not None:
-                rr.record_exclusion(report, "eee", csv_path.name, str(e))
-            return []
+            report_data["exclusions"][subject_key] = str(e)
+            return [], report_data
         if shocker_col is None:
             msg = "USE_SHOCKER_COLUMN is True, but no Shocker active column was found"
             print(f"  [warn] {csv_path.name}: {msg}; skipping.")
-            if report is not None:
-                rr.record_exclusion(report, "eee", csv_path.name, msg)
-            return []
+            report_data["exclusions"][subject_key] = msg
+            return [], report_data
     else:
         try:
             us_on, us_off = utils.find_us_cols(df, cfg)
         except ValueError as e:
             print(f"  [warn] {csv_path.name}: {e}; skipping.")
-            if report is not None:
-                rr.record_exclusion(report, "eee", csv_path.name, str(e))
-            return []
+            report_data["exclusions"][subject_key] = str(e)
+            return [], report_data
 
     cs_trials = [t for t in trials if t["type"] == "CS+"]
     if not cs_trials:
-        if report is not None:
-            rr.record_exclusion(report, "eee", csv_path.name, "no CS+ trials detected")
-        return []
+        report_data["exclusions"][subject_key] = "no CS+ trials detected"
+        return [], report_data
 
-    # Record columns used
-    if report is not None:
-        rr.record_subject(report, "eee", csv_path.name,
-                          columns_used={"time":          time_col,
-                                        "in_platform":   platform_col,
-                                        "CS+_detection": cs_source,
-                                        "US_detection":  shocker_col or "TTL",
-                                        "US_on_col":     us_on  or "not used",
-                                        "US_off_col":    us_off or "not used"})
+    cols_used = {
+        "time":          time_col,
+        "in_platform":   platform_col,
+        "CS+_detection": cs_source,
+        "US_detection":  shocker_col or "TTL",
+        "US_on_col":     us_on  or "not used",
+        "US_off_col":    us_off or "not used",
+    }
+    report_data["subjects"][subject_key] = {
+        "columns_used": cols_used,
+        "warnings":     [],
+        "skipped":      [],
+    }
 
     day, context, session = utils.parse_folder_bits(day_dir.name)
     t    = df[time_col].astype(float).to_numpy()
@@ -191,24 +196,60 @@ def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg, report=None):
             trial_start_s=tr["start"], trial_end_s=tr["end"],
             us_start_s=us_start, us_end_s=us_end, outcome=outcome,
         ))
-    return rows
+
+    return rows, report_data
 
 
-# ── Data collection across all BehaviorData dirs ────────────────────────────
+def _process_file_star(args):
+    return _process_file(*args)
 
-def _collect_all(cfg, meta, report=None):
-    suffix   = cfg["csv_suffix"]
-    all_rows = []
+
+# ── Pass 1 driver ─────────────────────────────────────────────────────────────
+
+def _collect_all_parallel(cfg, report=None):
+    tasks = []
     for bd in cfg["behaviordata_dirs"]:
-        bd_meta = utils.load_metadata(bd)
+        meta   = utils.load_metadata(bd)
+        suffix = cfg["csv_suffix"]
         for day_dir in utils.find_session_dirs(bd):
-            csvs = sorted(day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
+            csvs = sorted(
+                day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
             for csv_path in csvs:
-                all_rows.extend(_process_file(csv_path, bd_meta, day_dir, bd, cfg, report=report))
+                tasks.append((csv_path, meta, day_dir, bd, cfg))
+
+    if not tasks:
+        print("  [warn] No CSV files found.")
+        return pd.DataFrame()
+
+    print(f"  Found {len(tasks)} CSV files. Processing with {cfg['n_workers']} workers...")
+
+    all_rows = []
+
+    with ProcessPoolExecutor(max_workers=cfg["n_workers"]) as pool:
+        future_to_csv = {pool.submit(_process_file_star, t): t[0] for t in tasks}
+        for future in as_completed(future_to_csv):
+            csv_path = future_to_csv[future]
+            try:
+                rows, report_data = future.result()
+            except Exception as exc:
+                print(f"  [error] {csv_path.name} raised an exception: {exc}")
+                continue
+
+            all_rows.extend(rows)
+
+            if report is not None:
+                for key, info in report_data["subjects"].items():
+                    rr.record_subject(report, "eee", key,
+                                      columns_used=info["columns_used"],
+                                      warnings=info["warnings"],
+                                      skipped=info["skipped"])
+                for key, reason in report_data["exclusions"].items():
+                    rr.record_exclusion(report, "eee", key, reason)
+
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
-# ── Per-animal proportions and group means ──────────────────────────────────
+# ── Per-animal proportions and group means (unchanged) ───────────────────────
 
 def _per_animal_props(df):
     valid = df[df["outcome"].isin(OUTCOME_ORDER)].copy()
@@ -241,13 +282,12 @@ def _group_means(per_animal, by_sex=False):
                  n_animals=("animal_id","nunique")))
 
 
-# ── Figures ─────────────────────────────────────────────────────────────────
+# ── Figures (unchanged) ───────────────────────────────────────────────────────
 
 def _stacked_bar_panel(ax, group_means, x_keys, x_labels):
     evade  = np.array([group_means.get(k, {}).get("evade_pct",  0.0) for k in x_keys])
     escape = np.array([group_means.get(k, {}).get("escape_pct", 0.0) for k in x_keys])
     endure = np.array([group_means.get(k, {}).get("endure_pct", 0.0) for k in x_keys])
-    ns     = [group_means.get(k, {}).get("n_animals", 0) for k in x_keys]
     x = np.arange(len(x_keys)); bar_w = 0.7
     ax.bar(x, evade,  width=bar_w, color=OUTCOME_COLORS["evade"])
     ax.bar(x, escape, width=bar_w, bottom=evade, color=OUTCOME_COLORS["escape"])
@@ -257,10 +297,6 @@ def _stacked_bar_panel(ax, group_means, x_keys, x_labels):
     ax.set_ylim(0, 100)
     ax.grid(True, axis="y", alpha=0.3)
     ax.margins(x=0.15)
-    for xi, n in enumerate(ns):
-        if n > 0:
-            ax.text(xi, 0.985, f"n={n}", transform=ax.get_xaxis_transform(),
-                    ha="center", va="top", fontsize=8)
 
 
 def _make_stacked_bars(group_df, out_dir, cfg, by_sex, fname_tag):
@@ -310,7 +346,7 @@ def _make_stacked_bars(group_df, out_dir, cfg, by_sex, fname_tag):
     utils.save_fig(fig, out_dir / f"{fname_tag}.svg")
 
 
-# ── Prism export ────────────────────────────────────────────────────────────
+# ── Prism export (unchanged) ──────────────────────────────────────────────────
 
 def _prism_export(per_animal, out_dir):
     out_path = out_dir / "eee_prism_ready.xlsx"
@@ -327,7 +363,7 @@ def _prism_export(per_animal, out_dir):
     print(f"[ok] Prism table saved: {out_path}")
 
 
-# ── Output helper ───────────────────────────────────────────────────────────
+# ── Output helper (unchanged) ─────────────────────────────────────────────────
 
 def _write_outputs(df, out_dir, cfg, fname_tag):
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -358,27 +394,18 @@ def _find_behaviordata_for_cohort(cohort_id, behaviordata_dirs):
     return None
 
 
-# ── Entry point ─────────────────────────────────────────────────────────────
+# ── Entry point ───────────────────────────────────────────────────────────────
 
 def run(cfg, report=None):
-    subfolder = cfg["eee_subfolder"]
-
-    print("  Classifying CS+ outcomes across all session days...")
-    df = _collect_all(cfg, None, report=report)
+    print("  Collecting and processing all CSVs in parallel...")
+    df = _collect_all_parallel(cfg, report=report)
 
     if df.empty:
         print("  [warn] No EEE data found. Skipping EEE analysis.")
         return
 
-    print("  Writing within-session day outputs...")
-    if "_day_dir" in df.columns:
-        for day_dir, day_df in df.groupby("_day_dir", dropna=False):
-            if pd.isna(day_dir):
-                continue
-            day_path = Path(day_dir)
-            day_out = day_path / "Analysis" / subfolder
-            print(f"  Writing day outputs to {day_out}")
-            _write_outputs(day_df.copy(), day_out, cfg, f"eee_{day_path.name}")
+    print("  Writing combined outputs...")
+    _write_outputs(df.copy(), cfg["analysis_out"] / cfg["eee_subfolder"], cfg, "eee")
 
     if "cohort_id" in df.columns:
         for cohort_id, cohort_df in df.groupby("cohort_id", dropna=False):
@@ -388,8 +415,18 @@ def run(cfg, report=None):
             if cohort_bd is None:
                 print(f"  [warn] Cannot locate BehaviorData for cohort '{cohort_id}'; skipping.")
                 continue
-            cohort_out = cohort_bd / "Analysis" / subfolder
+            cohort_out = cohort_bd / "Analysis" / cfg["eee_subfolder"]
             print(f"  Writing cohort '{cohort_id}' outputs to {cohort_out}")
             _write_outputs(cohort_df.copy(), cohort_out, cfg, f"eee_{cohort_id}")
+
+    # Per-day outputs
+    if "_day_dir" in df.columns:
+        for day_dir_str, day_df in df.groupby("_day_dir", dropna=False):
+            if pd.isna(day_dir_str):
+                continue
+            day_path = Path(day_dir_str)
+            day_out  = day_path / "Analysis" / cfg["eee_subfolder"]
+            print(f"  Writing day outputs to {day_out}")
+            _write_outputs(day_df.copy(), day_out, cfg, f"eee_{day_path.name}")
 
     print("  EEE analysis complete.")

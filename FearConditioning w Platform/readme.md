@@ -2,9 +2,50 @@
 
 ## Overview
 
-This pipeline processes behavioral data from fear conditioning experiments recorded in AnyMaze. It computes % time freezing, freezing bout counts, % time on platform, latency to platform, and shock outcome classification (Evade / Escape / Endure) across multiple session days and multiple cohorts, then produces tiled figures and Prism-ready tables.
+This pipeline processes behavioral data from fear conditioning experiments recorded in AnyMaze. It computes % time freezing, freezing bout counts, % time on platform, latency to platform, shock outcome classification (Evade / Escape / Endure), US-locked platform time, CS-locked speed/distance summaries, per-session event rasters, and HMM-ready movement features across multiple session days and cohorts.
 
-**You only need to edit one file: `runner.py`.** Everything else runs automatically from there.
+**For the main behavioral pipeline, you only need to edit `runner.py`.** HMM preprocessing is standalone and is configured in `HMM_analysis.py`.
+
+### TL;DR: What you need to configure
+
+For a normal pipeline run, open `runner.py` and configure:
+
+- `BEHAVIORDATA_DIRS`: one or more BehaviorData folders to analyze.
+- `ANALYSIS_OUTPUT_DIR`: where combined across-cohort outputs should be written.
+- Treatment labels, aliases, and colors.
+- `COLUMN_ALIASES` and `COLUMN_MATCH_MODE`: how the pipeline should recognize your AnyMaze column names.
+- `CS_DETECTION_MODE` and related CS+/CS- column settings.
+- The `RUN_*` toggles for the analyses you want.
+- Optional analysis settings, such as trial caps, Prism export, sex/litter breakdowns, US/shock-window settings, and speed-window settings.
+
+For a new dataset, run `behaviordata_schema_checker.py` first to catch folder, metadata, filename, and column issues. If you want HMM-ready movement features, configure and run `HMM_analysis.py` separately.
+
+After that, run `runner.py`. The later sections explain the folder layout, metadata spreadsheet, matching rules, analysis methods, output files, and troubleshooting in more detail.
+
+### Modular pipeline overview
+
+`runner.py` is the orchestrator for the main behavioral pipeline. It reads the settings at the top of the file, builds one shared configuration dictionary, creates the run report, and then calls each enabled module through its `run(...)` function:
+
+```
+freezing_analysis.py
+platform_analysis.py
+eee_analysis.py
+us_locked_analysis.py
+event_raster_analysis.py
+speed_analysis.py
+```
+
+The analysis modules do the metric-specific work, but they all rely on `utils.py` for shared tasks such as loading metadata, finding session folders, matching CSV filenames to animals, normalizing treatment labels, resolving column names, and detecting CS+/CS- trial windows. This is why most settings live in one place in `runner.py`: the modules share the same metadata, column matching, and trial-detection rules.
+
+When the README or console output refers to **Pass 1**, **Pass 2**, or **Pass 3**, those names describe the general data-flow stages:
+
+| Pass | What it means | Typical output location |
+|---|---|---|
+| **Pass 1** | Read raw AnyMaze CSVs, match each file to metadata, resolve columns, detect trials, compute per-file/per-session rows, and log warnings or exclusions. Some analyses write per-session CSVs or figures here; others keep Pass 1 rows in memory. | Session folders such as `<BehaviorData>/d##_.../Analysis/<subfolder>/`, or in-memory rows |
+| **Pass 2** | Aggregate Pass 1 results across session days within a cohort/BehaviorData folder and write cohort-level outputs. | `<BehaviorData>/Analysis/<subfolder>/` |
+| **Pass 3** | Combine results across all BehaviorData folders listed in `BEHAVIORDATA_DIRS` and write the final cross-cohort outputs. | `ANALYSIS_OUTPUT_DIR/<subfolder>/` |
+
+Not every module uses all three passes in exactly the same way. Freezing and EEE collect Pass 1 rows in memory and then write cumulative outputs. Platform still writes per-session summaries that are read back for cumulative outputs. Speed uses an explicit Pass 1 / Pass 2 / Pass 3 structure. Event rasters only run at the Pass 1/session level. US-locked writes per-session outputs and then combined heatmaps. `HMM_analysis.py` is separate from this pass structure and is run independently when you want HMM-ready movement features.
 
 ---
 
@@ -18,11 +59,12 @@ This pipeline processes behavioral data from fear conditioning experiments recor
 6. [How Files and Animals Are Matched](#6-how-files-and-animals-are-matched)
 7. [How Trials Are Detected](#7-how-trials-are-detected)
 8. [How Column Names Are Normalized and Matched](#8-how-column-names-are-normalized-and-matched)
-9. [The Math](#9-the-math)
+9. [Analysis Methods](#9-analysis-methods)
 10. [Output Files and Folder Structure](#10-output-files-and-folder-structure)
 11. [Troubleshooting](#11-troubleshooting)
-12. [US-Locked Platform Analysis](#12-us-locked-platform-analysis)
-13. [Schema Checker](#13-schema-checker)
+12. [Schema Checker](#12-schema-checker)
+13. [HMM Analysis Workflow](#13-hmm-analysis-workflow)
+14. [Performance and Parallelization Notes](#14-performance-and-parallelization-notes)
 
 ---
 
@@ -42,8 +84,13 @@ The procedures of the US-locked analysis were taken from Eastman Lewis and Kenya
    platform_analysis.py
    eee_analysis.py
    us_locked_analysis.py
+   event_raster_analysis.py
+   speed_analysis.py
+   HMM_analysis.py
+   run_report.py
    sanity_check.py
    behaviordata_schema_checker.py
+   Modeling/
    ```
 
 2. Open `runner.py` in Spyder.
@@ -58,7 +105,7 @@ The procedures of the US-locked analysis were taken from Eastman Lewis and Kenya
 
 7. Press play (▶). Outputs appear inside each BehaviorData folder and in the combined output directory.
 
-> **First time with a new dataset?** Run `behaviordata_schema_checker.py` first (see [Section 13](#13-schema-checker)) to validate your folder structure, metadata, and CSV columns before running the full pipeline.
+> **First time with a new dataset?** Run `behaviordata_schema_checker.py` first (see [Section 12](#12-schema-checker)) to validate your folder structure, metadata, and CSV columns before running the full pipeline.
 
 ---
 
@@ -68,10 +115,15 @@ The procedures of the US-locked analysis were taken from Eastman Lewis and Kenya
 |---|---|
 | `runner.py` | **Start here.** All user settings live here. Calls the analysis scripts. |
 | `utils.py` | Shared functions used by all analysis scripts. Do not edit unless you know what you are changing. |
-| `freezing_analysis.py` | Two-pass pipeline: per-day % time freezing and bout counts, then cumulative figures across all cohorts. |
-| `platform_analysis.py` | Two-pass pipeline: per-day % time on platform and latency, then cumulative figures across all cohorts. |
-| `eee_analysis.py` | Classifies CS+ trials as Evade, Escape, or Endure across all days and cohorts. |
+| `freezing_analysis.py` | Parallel, in-memory % time freezing pipeline with optional bout counts, cohort outputs, combined outputs, and total freezing bar plots. |
+| `platform_analysis.py` | Pass 1 writes per-session % time on platform and latency summaries; Pass 2 writes cohort and combined cumulative outputs. |
+| `eee_analysis.py` | Parallel, in-memory CS+ outcome classifier for Evade, Escape, and Endure across all days and cohorts. |
 | `us_locked_analysis.py` | Computes % platform time locked to the shock (US) delivery window specifically, rather than the full CS+ trial. |
+| `event_raster_analysis.py` | Writes Pass 1 per-session SVG rasters showing freezing, platform occupancy, CS+, CS-, and US tracks. |
+| `speed_analysis.py` | CS-locked speed, distance, and movement analysis with per-session SVGs and cohort/combined Excel summaries. |
+| `HMM_analysis.py` | Standalone builder for HMM-ready movement feature tables from raw AnyMaze CSVs. |
+| `Modeling/` | Downstream HMM modeling notebook/script outputs and exploratory model artifacts. |
+| `run_report.py` | Writes `run_report.xlsx` with configuration, per-subject logs, exclusions, and analysis status. |
 | `sanity_check.py` | Produces tracking coverage and IQR outlier workbooks, plus trial window timing consistency workbooks, from raw CSVs. |
 | `behaviordata_schema_checker.py` | Standalone validator — checks folder structure, metadata, file naming, and CSV column compatibility before you run the pipeline. |
 
@@ -159,6 +211,15 @@ See [Section 8](#8-how-column-names-are-normalized-and-matched) for the exact ru
 **For trial detection (all analyses):**
 - Either continuous tone-status columns (`CS+ tone status`, `CS- tone status`) or TTL ON/OFF event columns (`CS+ ON activated`, `CS+ OFF activated`, `CS- ON activated`, `CS- OFF activated`). See [Section 7](#7-how-trials-are-detected) for details on which to use and how to configure detection mode.
 
+**For speed analysis:**
+- A speed column such as `Speed (m/s)` or `Speed`. Speed windows are downsampled to 100 ms bins before plotting and distance calculation.
+
+**For event rasters:**
+- The time column is required. Freezing, platform, CS+, CS-, and US tracks are added when their source columns are found. Missing optional tracks are logged in `run_report.xlsx`.
+
+**For HMM feature generation:**
+- X and Y position columns such as `X centre` / `Y centre`, `X center` / `Y center`, or equivalent aliases in `HMM_analysis.py`.
+
 **For EEE analysis:**
 - If `USE_SHOCKER_COLUMN = True`, `Shocker active` is used as the US/shock source.
 - If `USE_SHOCKER_COLUMN = False`, explicit US/shock TTL columns are used if present (for example `US ON activated`, `US OFF activated`, `Shock ON activated`, `Shock OFF activated`).
@@ -202,9 +263,11 @@ When multiple BehaviorData folders are listed in `BEHAVIORDATA_DIRS`, each folde
 
 Open `runner.py`. Everything between the top and the `DO NOT EDIT BELOW THIS LINE` marker is yours to change.
 
-### 5.1 Data directories
+### 5.1 Data directories and worker count
 
 ```python
+N_WORKERS = 5
+
 BEHAVIORDATA_DIRS = [
     r"Z:\path\to\Cohort1\BehaviorData",
     r"Z:\path\to\Cohort2\BehaviorData",
@@ -212,6 +275,8 @@ BEHAVIORDATA_DIRS = [
 
 ANALYSIS_OUTPUT_DIR = r"Z:\path\to\combined\Analysis"
 ```
+
+`N_WORKERS` controls the number of worker processes used by the parallel analyses (`freezing_analysis`, `eee_analysis`, and `speed_analysis`). A good starting value is the number of physical CPU cores minus one so the computer stays responsive.
 
 List every BehaviorData folder you want to include. Use raw strings (the `r` prefix) to avoid issues with backslashes on Windows. The combined output directory receives figures and CSVs that collapse all cohorts together by treatment group.
 
@@ -247,9 +312,13 @@ RUN_FREEZING     = True    # % time freezing + freezing bouts (if enabled below)
 RUN_PLATFORM     = False   # % time on platform + latency (if enabled below)
 RUN_EEE          = False   # Evade / Escape / Endure shock outcome classification
 RUN_US_LOCKED    = False   # % platform time locked to the shock delivery window
+RUN_EVENT_RASTER = False   # per-session event/behavior raster SVGs
+RUN_SPEED        = True    # CS-locked speed, distance, and movement summaries
 ```
 
 Set any of these to `False` to skip that analysis entirely.
+
+`HMM_analysis.py` is a standalone script, not a `runner.py` toggle. Run it separately when you want to build the HMM input table.
 
 ### 5.4 CS+ / CS- trial detection
 
@@ -281,7 +350,7 @@ Aliases are checked first, then these patterns are used as fallback matchers whe
 Column aliases let you configure expected header variations in `runner.py` without editing the analysis scripts:
 
 ```python
-COLUMN_MATCH_MODE = "fallback"  # or "strict"
+COLUMN_MATCH_MODE = "strict"  # or "fallback"
 
 COLUMN_ALIASES = {
     "time": ["Time (s)", "Time"],
@@ -290,10 +359,13 @@ COLUMN_ALIASES = {
     "us_on": ["US ON activated", "Shock ON activated"],
     "us_off": ["US OFF activated", "Shock OFF activated"],
     "shocker_active": ["Shocker active"],
+    "speed": ["Speed (m/s)", "Speed"],
 }
 ```
 
 Use `strict` when you want the pipeline to use only the aliases you listed. Use `fallback` when you want aliases first, then the older heuristic matching. In both modes, ambiguous matches raise a clear `Ambiguous column match...` error.
+
+> **Column-matching recommendation:** `strict` is recommended for final analyses because it prevents the pipeline from guessing. The tradeoff is that the experimenter must carefully list every expected column name and spelling variation in `COLUMN_ALIASES`, especially when combining diverse datasets or cohorts. If you are setting up a new dataset, you can run once with `COLUMN_MATCH_MODE = "fallback"` and check `run_report.xlsx` for warnings and column-resolution notes, then add the needed names to `COLUMN_ALIASES` before switching back to `strict`.
 
 ### 5.6 Trial caps
 
@@ -316,9 +388,11 @@ FREEZING_SUBFOLDER  = "% time freezing"
 PLATFORM_SUBFOLDER  = "% time on platform"
 LATENCY_SUBFOLDER   = "latency to platform"
 EEE_SUBFOLDER       = "Shock outcomes (evade-escape-endure)"
+EVENT_RASTER_SUBFOLDER = "event rasters"
+SPEED_SUBFOLDER     = "speed"
 ```
 
-These subfolder names are used both when writing per-day outputs (Pass 1) and when reading them back for cumulative analysis (Pass 2). If you change these names after running Pass 1, Pass 2 will not find the existing summaries and will warn that they are missing.
+These subfolder names control where outputs are written. Freezing, EEE, and speed now collect Pass 1 rows in memory and then write cohort/combined outputs directly; platform and US-locked analyses still write per-session outputs that are later used for cumulative summaries.
 
 ### 5.8 Sub-analysis toggles
 
@@ -350,7 +424,18 @@ EXCLUDE_BEHAVIOR_IDS   = []     # explicitly skip animals by behavior_id
 HEATMAP_SORT           = "response"  # "response" (highest responders on top) or "alphabetical"
 ```
 
-See [Section 12](#12-us-locked-platform-analysis) for a full description of US-locked modes. For EEE, `USE_SHOCKER_COLUMN = True` uses `Shocker active`; `False` uses explicit US/Shock ON/OFF TTL columns.
+See [Section 9.4](#94-us-locked-platform-analysis) for a full description of US-locked modes. For EEE, `USE_SHOCKER_COLUMN = True` uses `Shocker active`; `False` uses explicit US/Shock ON/OFF TTL columns.
+
+### 5.10 Speed settings
+
+```python
+SPEED_SUBFOLDER = "speed"
+
+SPEED_PRE_S  = 30.0
+SPEED_POST_S = 60.0
+```
+
+Speed analysis extracts a window around each CS onset and bins it at 100 ms. With the defaults above, each trial window includes 30 seconds before onset and 60 seconds after onset.
 
 ---
 
@@ -473,7 +558,7 @@ Important limits:
 Column roles are configured in `runner.py`:
 
 ```python
-COLUMN_MATCH_MODE = "fallback"  # or "strict"
+COLUMN_MATCH_MODE = "strict"  # or "fallback"
 
 COLUMN_ALIASES = {
     "freezing": ["Freezing", "Freezing state"],
@@ -493,6 +578,8 @@ def resolve_column(df, role, cfg, fallback=None, required=True):
 ```
 
 In `strict` mode, required columns must appear in `COLUMN_ALIASES`; no heuristic guessing is used. In `fallback` mode, aliases still win first, but if no alias matches, the old heuristic is attempted.
+
+For final analyses, `strict` is safer and more reproducible. It requires more careful setup: if one cohort exports `In platform`, another exports `Inside platform`, and a third exports `On platform`, all three names should be listed under `COLUMN_ALIASES["in_platform"]`. During setup or debugging, `fallback` can help identify missing aliases, but review `run_report.xlsx` warnings and column-resolution notes before trusting the outputs.
 
 If a CSV contains both `Not Freezing` and `Freezing`, and both match the `freezing` role, the pipeline now fails loudly:
 
@@ -653,89 +740,179 @@ cohort_id
 
 ---
 
-## 9. The Math
+## 9. Analysis Methods
 
-### 9.1 % Time freezing
+This section keeps the analysis descriptions together. Each analysis uses the shared file matching, metadata matching, trial detection, and column matching rules described above unless noted otherwise.
 
-For each trial or ITI window `[start, end)`, the binary freezing signal is integrated using a piecewise-constant (step function) model:
+### 9.1 Freezing Analysis
+
+This analysis computes freezing during each detected CS+, CS-, or ITI window. It can also count freezing bouts when `FREEZING_BOUTS = True`.
+
+#### Percent time freezing
+
+For each trial or ITI window `[start, end)`, the binary freezing signal is integrated using a piecewise-constant model:
 
 ```
-freeze_seconds = Σ overlap(segment_i, [start, end)) × freezing_state_i
-freeze_pct     = 100 × freeze_seconds / window_duration
+freeze_seconds = sum(overlap(segment_i, [start, end)) * freezing_state_i)
+freeze_pct     = 100 * freeze_seconds / window_duration
 ```
 
 Each segment spans from sample `i` to sample `i+1`, and the signal is assumed to hold its value until the next sample.
 
-### 9.2 Freezing bouts
+#### Freezing bouts
 
-A bout is a contiguous period where the freezing signal is > 0 within a trial window. The pipeline scans sample by sample, recording 0→1 transitions (bout onsets) and 1→0 transitions (bout offsets). If the signal is already 1 at the window boundary, a bout is considered to have started at that boundary. Bout count per trial is the number of bouts detected in that window.
+A bout is a contiguous period where the freezing signal is > 0 within a trial window. The pipeline scans sample by sample, recording `0 -> 1` transitions as bout onsets and `1 -> 0` transitions as bout offsets. If the signal is already 1 at the window boundary, a bout is considered to have started at that boundary. Bout count per trial is the number of bouts detected in that window.
 
-### 9.3 % Time on platform
+### 9.2 Platform Analysis
 
-Identical in method to % time freezing, using the `in_platform` binary signal:
+This analysis computes platform occupancy during CS+ and CS- windows. If `PLATFORM_LATENCY = True`, it also computes latency to the first platform entry.
+
+#### Percent time on platform
+
+The method is identical to percent time freezing, using the `in_platform` binary signal:
 
 ```
-platform_seconds = Σ overlap(segment_i, [start, end)) × platform_state_i
-platform_pct     = 100 × platform_seconds / window_duration
+platform_seconds = sum(overlap(segment_i, [start, end)) * platform_state_i)
+platform_pct     = 100 * platform_seconds / window_duration
 ```
 
-### 9.4 Latency to platform
+#### Latency to platform
 
-For each CS+ or CS- window, latency is the elapsed time from window start to the first 0→1 transition in `in_platform`. If the animal is already on the platform at window start, latency = 0. If the animal never enters the platform, latency = NaN. If the CSV already contains an explicit latency column (e.g. `latency_to_platform_s`), that value is used directly.
+For each CS+ or CS- window, latency is the elapsed time from window start to the first `0 -> 1` transition in `in_platform`. If the animal is already on the platform at window start, latency = 0. If the animal never enters the platform, latency = NaN. If the CSV already contains an explicit latency column, such as `latency_to_platform_s`, that value is used directly.
 
-### 9.5 Evade / Escape / Endure classification
+### 9.3 Evade / Escape / Endure Analysis
 
-Each CS+ trial with a detected US window is classified into one of three outcomes:
+This analysis classifies each CS+ trial with a detected US window into one of three shock outcomes. The US window comes from the US/shock source configured in `runner.py`.
 
-- **Evade:** Animal was on the platform for the entire US window (`platform fraction ≥ 1 − 1e-6`)
-- **Endure:** Animal was off the platform for the entire US window (`platform fraction ≤ 1e-6`)
-- **Escape:** A 0→1 transition in `in_platform` occurs between US onset and US offset (animal reached the platform after the shock started). Any partial contact that fits neither Evade nor Endure is also classified as Escape.
+#### Outcome labels
+
+- **Evade:** Animal was on the platform for the entire US window (`platform fraction >= 1 - 1e-6`)
+- **Endure:** Animal was off the platform for the entire US window (`platform fraction <= 1e-6`)
+- **Escape:** A `0 -> 1` transition in `in_platform` occurs between US onset and US offset. Any partial contact that fits neither Evade nor Endure is also classified as Escape.
+
+#### Valid trials
 
 Trials where no US is detected, or where US onset falls after CS+ offset, are classified as `no_us` and excluded from all percentage calculations.
+
+#### Percentages
 
 Per-animal proportions are computed before group averaging, weighting each animal equally regardless of trial count:
 
 ```
-evade_pct  = 100 × (# evade trials) / (# valid CS+ trials)
-escape_pct = 100 × (# escape trials) / (# valid CS+ trials)
-endure_pct = 100 × (# endure trials) / (# valid CS+ trials)
+evade_pct  = 100 * (# evade trials) / (# valid CS+ trials)
+escape_pct = 100 * (# escape trials) / (# valid CS+ trials)
+endure_pct = 100 * (# endure trials) / (# valid CS+ trials)
 ```
 
-### 9.6 Group means and SEM
+### 9.4 US-Locked Platform Analysis
 
-The shaded ribbon in all line figures represents ±1 SEM:
+This analysis computes percent time on platform specifically during the US (shock) delivery window of each CS+ trial, rather than across the full CS+ period. This isolates the avoidance/escape response at the moment of shock.
+
+#### Mode A: Shocker active column (`USE_SHOCKER_COLUMN = True`)
+
+The pipeline reads the `Shocker active` column directly from the AnyMaze CSV and detects contiguous blocks where the value is 1. Each block is clipped to within the boundaries of the nearest CS+ trial to exclude any stray pulses caused by timing imprecision in the recording hardware.
+
+Use this mode when you have a reliable `Shocker active` column in your export and want the most accurate US timing.
+
+#### Mode B: Derived window (`USE_SHOCKER_COLUMN = False`)
+
+The US window is derived as the final `US_DURATION_S` seconds of each detected CS+ trial. Trial boundaries come from the same tone-status or TTL detection used by all other analyses. This mode works for all sessions including yoked controls, where the shocker column may not reflect the actual shock schedule.
+
+#### Above-chance values
+
+All heatmaps display **percent platform time during US minus chance level**, not raw platform percentage. The chance level is set by `US_CHANCE_BASELINE_PCT` (default 16.4%, reflecting the chance-level occupancy for this paradigm). Animals that consistently outperform chance appear in warm colors; animals at or below chance appear in cool colors.
+
+#### Run report
+
+Every time the US-locked analysis runs, it writes `us_locked_run_report.txt` into the day output folder. This report includes: the timestamp, all relevant runner settings, which animals were excluded and why, and per-subject notes on which columns were used for detection. Retain this file alongside your data for reproducibility.
+
+#### Multi-animal ID warning
+
+In combined across-cohort figures, animals are labeled by `animal_id` only. If the same `animal_id` appears in more than one cohort within the same day/treatment panel, rows can be merged during pivoting and averaged silently. The pipeline prints a warning when this occurs. The recommended fix is to make animal IDs globally unique across cohorts before analysis.
+
+### 9.5 Speed Analysis
+
+This analysis aligns movement to CS timing and summarizes speed and distance for CS+, CS-, and ITI windows.
+
+#### Windowing and bins
+
+Speed analysis downsamples each recording to 100 ms bins, detects CS+, CS-, and ITI windows, and extracts a configurable pre/post window around each onset.
+
+#### Distance
+
+Per-trial distance is computed from speed using:
 
 ```
-SEM = SD / √n
+distance_m = sum(valid_speed_bins_m_per_s) * 0.1
 ```
 
-where `n` is the number of animals contributing data at that trial index on that day. Animals missing data at a given trial index are excluded from that point's calculation only.
+#### Averaging
+
+NaN speed bins are ignored rather than filled with zero. Cohort and combined figures average per animal first so animals with more trials do not dominate the group mean.
+
+### 9.6 Event Raster Analysis
+
+This analysis draws per-session event timelines so trial timing and state signals can be checked visually.
+
+#### Tracks shown
+
+Event rasters convert binary signals into active intervals. Each interval is drawn as a horizontal span for one subject and one track: freezing, platform, CS+, CS-, or US.
+
+#### US source
+
+US intervals use the configured preferred source when available, then fall back to the alternate raw source, then to the last `US_DURATION_S` seconds of each CS+ trial.
+
+### 9.7 HMM Movement Features
+
+`HMM_analysis.py` is a standalone preprocessing script for downstream Hidden Markov Model work. It is not called by `runner.py`, and the `runner.py` analysis toggles do not affect it.
+
+This script prepares movement data that can be used by an HMM to identify hidden behavioral states within the movement feature space. In practice, `HMM_analysis.py` builds the model input table, and `Modeling/Hidden_Markov_Model.ipynb` is where you can read more about fitting and interpreting the Hidden Markov Model itself.
+
+The script downsamples position data to 100 ms bins and computes movement features without crossing session boundaries. The resulting table can be large, so `WRITE_PARQUET = True` also writes a compressed `.parquet` file that is faster to read back into Python than the CSV version.
+
+| Feature | Meaning |
+|---|---|
+| `displacement_per_100ms` | Pythagorean displacement per 100 ms bin; not velocity per second |
+| `abs_delta_displacement_per_100ms` | Absolute change in `displacement_per_100ms` from the previous bin; not acceleration per second squared |
+| `turning_angle` | Absolute change in heading, wrapped to `[0, pi]` |
+| `dist_from_centre` | Distance from either a configured arena center or the session's auto-computed center |
+
+The table also carries identifiers and useful behavioral columns, including `subject`, `behavior_id`, `treatment`, `cohort_id`, `day`, `context`, `session`, `time_s`, `x`, `y`, `freezing`, and `in_platform`.
+
+See [Section 13](#13-hmm-analysis-workflow) for the HMM feature-generation workflow.
 
 ---
 
 ## 10. Output Files and Folder Structure
 
-### 10.1 Per-day outputs (written during Pass 1)
+### 10.1 Per-session outputs
 
-Both the freezing and platform pipelines run in two passes. Pass 1 writes a per-day summary CSV into each session folder before cumulative figures are produced:
+Per-session outputs are written inside each session day folder. Freezing, EEE, and speed now collect Pass 1 data in memory, so they do not need per-day intermediate CSVs for cumulative summaries.
 
 ```
 BehaviorData/
 └── d01_contextA_habituation/
     └── Analysis/
-        ├── % time freezing/
-        │   ├── freezing_summary.csv
-        │   └── freezing_bouts/              ← if FREEZING_BOUTS = True
-        │       └── Freezing_Bouts_Long.csv
-        └── % time on platform/
-            └── platform_summary.csv
+        ├── % time on platform/
+        │   └── platform_summary.csv
+        ├── Shock outcomes (evade-escape-endure)/
+        │   ├── eee_<day_folder>_all_days_concat.csv
+        │   ├── eee_<day_folder>_stacked_by_treatment.svg
+        │   ├── eee_<day_folder>_stacked_by_sex_treatment.svg  ← if EEE_BY_SEX = True
+        │   └── eee_prism_ready.xlsx              ← if PRISM_EXPORT = True
+        ├── event rasters/
+        │   └── event_behavior_raster_<day_folder>.svg
+        └── speed/
+            └── speed_graphs/
+                ├── combined_CS_speed_tiled.svg
+                ├── CSplus_speed_tiled.svg
+                ├── CSminus_speed_tiled.svg
+                └── distance_by_trial.svg
 ```
-
-Pass 2 reads these per-day summaries back and assembles the cumulative figures and Prism tables.
 
 ### 10.2 Across-session outputs per BehaviorData folder
 
-After Pass 2, each BehaviorData folder receives its own analysis outputs for the cohort it contains:
+Each BehaviorData folder receives analysis outputs for the cohort it contains:
 
 ```
 BehaviorData/
@@ -748,23 +925,38 @@ BehaviorData/
     │   ├── freezing_<cohort_id>_csplus_individual_tiled.svg
     │   ├── freezing_<cohort_id>_csplus_groupmeans_tiled.svg
     │   ├── freezing_<cohort_id>_csplus_by_sex_tiled.svg    ← if FREEZING_BY_SEX = True
+    │   ├── total_time_freezing_bar_plots/
+    │   │   └── freezing_<cohort_id>_total_time_freezing_bars_tiled.svg
     │   ├── freezing_<cohort_id>_prism_ready.xlsx           ← if PRISM_EXPORT = True
     │   ├── freezing_bouts/                                 ← if FREEZING_BOUTS = True
     │   └── litter_breakdown/                               ← if FREEZING_BY_LITTER = True
-    └── % time on platform/
-        └── ...
+    ├── % time on platform/
+    │   └── ...
+    ├── Shock outcomes (evade-escape-endure)/
+    │   ├── eee_<cohort_id>_all_days_concat.csv
+    │   ├── eee_<cohort_id>_stacked_by_treatment.svg
+    │   ├── eee_<cohort_id>_stacked_by_sex_treatment.svg      ← if EEE_BY_SEX = True
+    │   └── eee_prism_ready.xlsx                            ← if PRISM_EXPORT = True
+    └── speed/
+        ├── <treatment>_combined_output.xlsx
+        ├── <treatment>_distance_output.xlsx
+        ├── distance_across_sessions.svg
+        └── percent_total_movement_dual_axis.svg
 ```
 
 ### 10.3 Combined across-cohort outputs
 
-The combined output directory (`ANALYSIS_OUTPUT_DIR`) receives figures that collapse all cohorts together by treatment group:
+The combined output directory (`ANALYSIS_OUTPUT_DIR`) receives run reports and figures/workbooks that collapse all cohorts together by treatment group:
 
 ```
 Analysis/
+├── run_report.xlsx
 ├── % time freezing/
 │   ├── freezing_all_days_concat.csv
 │   ├── freezing_csplus_individual_tiled.svg
 │   ├── freezing_csplus_groupmeans_tiled.svg
+│   ├── total_time_freezing_bar_plots/
+│   │   └── freezing_total_time_freezing_bars_tiled.svg
 │   ├── freezing_prism_ready.xlsx
 │   └── freezing_bouts/
 ├── % time on platform/
@@ -773,20 +965,25 @@ Analysis/
 │   ├── platform_prism_ready.xlsx
 │   └── latency_to_platform/                ← if PLATFORM_LATENCY = True
 ├── Shock outcomes (evade-escape-endure)/
-│   ├── eee_<cohort_id>_all_days_concat.csv
-│   ├── eee_<cohort_id>_stacked_by_treatment.svg
-│   └── eee_<cohort_id>_prism_ready.xlsx
+│   ├── eee_all_days_concat.csv
+│   ├── eee_stacked_by_treatment.svg
+│   ├── eee_stacked_by_sex_treatment.svg      ← if EEE_BY_SEX = True
+│   └── eee_prism_ready.xlsx
+├── speed/
+│   ├── <treatment>_combined_output.xlsx
+│   ├── <treatment>_distance_output.xlsx
+│   ├── distance_across_sessions_combined.svg
+│   └── percent_total_movement_dual_axis_combined.svg
 └── US_lock_plttime/
     ├── us_locked_all_days_concat.csv
-    ├── control/
-    │   └── us_locked_heatmap_control_tiled.svg
-    └── ELS/
-        └── us_locked_heatmap_ELS_tiled.svg
+    ├── <treatment>/
+    │   └── us_locked_heatmap_<treatment>_tiled.svg
+    └── ...
 ```
 
 ### 10.4 Concatenated CSV columns
 
-All concatenated CSVs share a common set of identifier columns:
+Most pipeline concatenated CSVs share a common set of identifier columns:
 
 | Column | Description |
 |---|---|
@@ -804,6 +1001,8 @@ All concatenated CSVs share a common set of identifier columns:
 | `_source_csv` | Original filename |
 | `trial_type` | `CS+`, `CS-`, or `ITI` |
 | `trial_index` | 1-based index within that trial type for that animal × day |
+
+Speed outputs use the same identifiers where applicable, but label trial windows with `trial_kind` and `cs_type` because speed workbooks include CS+, CS-, and ITI windows in separate sheets. HMM outputs use `subject`, `day`, `context`, `session`, and `time_s` because they are continuous time-series feature tables rather than trial-window summaries.
 
 ### 10.5 Prism-ready Excel format
 
@@ -825,8 +1024,14 @@ No column contains the substring `freez`. Check that AnyMaze exported a freezing
 **`No trials detected`**
 The CS+/CS- detection columns were not found or never fire in the recording. Verify `CS_DETECTION_MODE` is appropriate for your export format, and check that your AnyMaze CSV contains the expected columns. Use `behaviordata_schema_checker.py` to diagnose which files are missing trial detection columns.
 
-**`Missing per-day summary: .../Analysis/% time freezing/freezing_summary.csv`**
-Pass 2 cannot find the summary written by Pass 1. This means either Pass 1 has not been run yet, or the `FREEZING_SUBFOLDER` / `PLATFORM_SUBFOLDER` settings were changed between runs. Re-run the full pipeline with consistent subfolder names.
+**`Missing per-day summary: .../Analysis/% time on platform/platform_summary.csv`**
+Platform cumulative outputs still read per-session platform summaries. This warning usually means Pass 1 did not run, no valid platform data was found, or `PLATFORM_SUBFOLDER` changed between runs. Re-run platform analysis with a consistent subfolder name.
+
+**`No speed column found`**
+Speed analysis needs a speed column such as `Speed (m/s)` or `Speed`. Add the exact AnyMaze header to `COLUMN_ALIASES["speed"]` in `runner.py`, or export speed from AnyMaze.
+
+**Parallel processing raises worker errors**
+Set `N_WORKERS = 1` to run the same analysis serially. This is useful for debugging a single problematic CSV because the original exception will be easier to read.
 
 **Figures appear but some panels are blank**
 A blank panel means no data was found for that treatment group × day combination after filtering. This is expected if not all groups ran on all days. It can also happen if `CS_TRIAL_CAP` is set too low, removing all trials for some animals.
@@ -842,35 +1047,7 @@ Python has a built-in module called `platform`. This pipeline uses `platform_ana
 
 ---
 
-## 12. US-Locked Platform Analysis
-
-This analysis computes % time on platform specifically during the US (shock) delivery window of each CS+ trial, rather than across the full CS+ period. This isolates the avoidance/escape response at the moment of shock.
-
-### Mode A — Shocker active column (`USE_SHOCKER_COLUMN = True`)
-
-The pipeline reads the `Shocker active` column directly from the AnyMaze CSV and detects contiguous blocks where the value is 1. Each block is clipped to within the boundaries of the nearest CS+ trial to exclude any stray pulses caused by timing imprecision in the recording hardware.
-
-Use this mode when you have a reliable `Shocker active` column in your export and want the most accurate US timing.
-
-### Mode B — Derived window (`USE_SHOCKER_COLUMN = False`)
-
-The US window is derived as the final `US_DURATION_S` seconds of each detected CS+ trial. Trial boundaries come from the same tone-status or TTL detection used by all other analyses. This mode works for all sessions including yoked controls, where the shocker column may not reflect the actual shock schedule.
-
-### Above-chance values
-
-All heatmaps display **% platform time during US minus chance level**, not raw platform percentage. The chance level is set by `US_CHANCE_BASELINE_PCT` (default 16.4%, reflecting the chance-level occupancy for this paradigm). Animals that consistently outperform chance appear in warm colors; animals at or below chance appear in cool colors.
-
-### Run report
-
-Every time the US-locked analysis runs, it writes `us_locked_run_report.txt` into the day output folder. This report includes: the timestamp, all relevant runner settings, which animals were excluded and why, and per-subject notes on which columns were used for detection. Retain this file alongside your data for reproducibility.
-
-### Multi-animal ID warning
-
-In combined across-cohort figures, animals are labeled by `animal_id` only. If the same `animal_id` appears in more than one cohort within the same day/treatment panel, rows can be merged during pivoting and averaged silently. The pipeline prints a warning when this occurs. The recommended fix is to make animal IDs globally unique across cohorts before analysis.
-
----
-
-## 13. Schema Checker
+## 12. Schema Checker
 
 `behaviordata_schema_checker.py` is a standalone diagnostic tool. Run it before your first full pipeline run on a new dataset, or any time you add new data and want to verify compatibility.
 
@@ -889,3 +1066,55 @@ In combined across-cohort figures, animals are labeled by `animal_id` only. If t
 Open `behaviordata_schema_checker.py` and set `BEHAVIORDATA_DIRS` to the same list of folders you plan to use in `runner.py`. Optionally set `REPORT_OUT` to a path where the full report should be saved as a text file. Run the file. A summary of errors and warnings is printed to the console, and suggested fixes are listed at the end.
 
 The checker does not modify any files and does not run the pipeline — it only reads and reports.
+
+---
+
+## 13. HMM Analysis Workflow
+
+`HMM_analysis.py` is a standalone preprocessing script for Hidden Markov Model work. It is not called by `runner.py`, and it should be run separately from the rest of the behavioral pipeline.
+
+Use it when you want one model-ready table containing downsampled movement and behavioral state features. The generated CSV/parquet is then used by `Modeling/Hidden_Markov_Model.ipynb` to fit HMMs that infer hidden states from the movement features.
+
+1. Open `HMM_analysis.py`.
+2. Set `BEHAVIORDATA_DIRS` to the BehaviorData folders you want to include.
+3. Set `OUTPUT_CSV` to the target path for the HMM input table.
+4. Confirm the HMM-specific `COLUMN_ALIASES` for time, freezing, platform, X position, and Y position.
+5. Set `N_WORKERS` and `WRITE_PARQUET`.
+6. Run `HMM_analysis.py`.
+
+The script writes:
+
+```
+hmm_input.csv
+hmm_input.parquet      <- if WRITE_PARQUET = True
+```
+
+The parquet file is compressed and usually faster to read for HMM fitting, especially when the feature table is large.
+
+The output includes `subject`, `behavior_id`, `treatment`, `cohort_id`, `day`, `context`, `session`, `time_s`, `x`, `y`, `freezing`, `in_platform`, `displacement_per_100ms`, `abs_delta_displacement_per_100ms`, `turning_angle`, and `dist_from_centre`.
+
+Downstream modeling lives in `Modeling/Hidden_Markov_Model.ipynb`. The current workflow uses the generated HMM input table as the source for fitting and summarizing hidden behavioral states.
+
+---
+
+## 14. Performance and Parallelization Notes
+
+The slowest and most energy-intensive parts of the pipeline are usually reading many large AnyMaze CSVs, downsampling/binning continuous time-series data, computing per-trial windows, and writing many figures, Excel workbooks, CSVs, or parquet files. Speed analysis and HMM feature generation can be especially heavy because they work with continuous movement data.
+
+`N_WORKERS` controls how many files the pipeline tries to process at the same time for parallelized analyses such as freezing, EEE, speed, and HMM preprocessing. More workers often make the run much faster, but only up to the point where the computer's CPU, memory, or file-reading speed becomes the bottleneck.
+
+A good starting point is:
+
+```python
+N_WORKERS = number_of_physical_cores - 1
+```
+
+On Windows, you can check your core count in Task Manager: press `Ctrl + Shift + Esc`, open **Performance**, click **CPU**, and look for **Cores** and **Logical processors**. You can also run this in PowerShell:
+
+```powershell
+Get-CimInstance Win32_Processor | Select-Object NumberOfCores,NumberOfLogicalProcessors
+```
+
+Use **Cores** as the safer starting point for `N_WORKERS`. **Logical processors** includes hyperthreading and is often higher than the physical core count.
+
+Network or remote drives can become a bottleneck because many workers may read large CSVs at once. In practice, this pipeline has still been much faster with multiple workers on our remote drives, so start with `cores - 1` and reduce `N_WORKERS` only if file access becomes unstable, memory use gets too high, or the computer becomes sluggish. Set `N_WORKERS = 1` when debugging a specific error so the original exception is easier to read.

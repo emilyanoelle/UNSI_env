@@ -12,7 +12,19 @@ groups and colors, then run this file in Spyder (press play).
 from pathlib import Path
 from utils import build_treatment_normalizer
 import run_report
+import shutil, pathlib
 
+# This is for clearing the pycache, which will cause a slight delay
+for _p in pathlib.Path(__file__).parent.rglob("__pycache__"):
+    shutil.rmtree(_p, ignore_errors=True)
+
+# ── CPU core usage ─────────────────────────────────────────────────────────
+# How many worker processes to use in parallel.
+# Rule of thumb: set this to the number of physical CPU cores you have minus
+# one, so your machine stays responsive while the pipeline runs.
+# You can also set it to None to let Python choose automatically.
+# ---------------------------------------------------------------------------
+N_WORKERS = 5
 
 # ── Data directories ─────────────────────────────────────────────────────────
 #
@@ -23,14 +35,15 @@ import run_report
 # Use raw strings (the r prefix) to avoid issues with backslashes on Windows.
 
 BEHAVIORDATA_DIRS = [
-    r"Z:\path\to\your\BehaviorData"
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData",
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 2\BehaviorData"
 ]
 
 # Top-level folder where combined across-cohort outputs are written.
 # Per-session outputs are always written inside their own BehaviorData folder.
 # Cohort-specific across-session outputs go to:
 #   <BehaviorData>/<cohort_id>/Analysis/<subfolder>/
-ANALYSIS_OUTPUT_DIR = r"Z:\path\to\combined\Analysis"
+ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis555"
 
 
 # ── Treatment group configuration ────────────────────────────────────────────
@@ -40,18 +53,16 @@ ANALYSIS_OUTPUT_DIR = r"Z:\path\to\combined\Analysis"
 # The FIRST key is treated as the control group for figure ordering.
 
 TREATMENT_ALIASES = {
-    "cre-wt": ["cre-wt"],
-    "mCherry":     ["mCherry", "mch"],
-    "PV KO":     ["pv ko", "PV KO"],
+    "ctrl": ["Control", "ctrl", ],
+    "ELS":     ["ELS", "LBN"],
 }
 
 # Hex color for each canonical treatment label (keys must match above exactly).
 # Female colors and unknown-sex colors are derived automatically as lighter
 # tints — you do not need to specify them separately.
 TREATMENT_COLORS = {
-    "cre-wt": "#558D9E",
-    "mCherry":     "#EC5800",
-    "PV KO":    "#BA55D3",
+    "ctrl": "#96A6AC",
+    "ELS":     "#E26E2B",
 }
 
 
@@ -59,11 +70,12 @@ TREATMENT_COLORS = {
 #
 # Set to True to run, False to skip.
 
-RUN_SANITY_CHECK    = True     # tracking coverage + IQR outliers + trial window consistency
-RUN_FREEZING        = True     # % time freezing + freezing bouts (if enabled below)
-RUN_PLATFORM        = True    # % time on platform + latency to platform (if enabled below)
-RUN_EEE             = True    # Evade / Escape / Endure shock outcome classification
-RUN_US_LOCKED       = True    # % platform time locked to the shock delivery window
+RUN_SANITY_CHECK    = False     # tracking coverage + IQR outliers + trial window consistency
+RUN_FREEZING        = False     # % time freezing + freezing bouts (if enabled below)
+RUN_PLATFORM        = False    # % time on platform + latency to platform (if enabled below)
+RUN_EEE             = False    # Evade / Escape / Endure shock outcome classification
+RUN_US_LOCKED       = False    # % platform time locked to the shock delivery window
+RUN_EVENT_RASTER    = False    # per-session event/behavior raster SVGs (pass 1 only)
 RUN_SPEED           = True     # CS-locked speed analysis
 
 
@@ -82,7 +94,7 @@ RUN_SPEED           = True     # CS-locked speed analysis
 #                 Recommended when you are unsure which columns are present,
 #                 or when your dataset mixes export configurations.
 
-CS_DETECTION_MODE = "ttl"
+CS_DETECTION_MODE = "tone_status"
 
 # Column name patterns for tone-status detection (used when mode is
 # "tone_status" or "auto"). Write them in any natural form — they are
@@ -106,7 +118,7 @@ TONE_STATUS_COL_CSMINUS = "cs minus tone status"
 # "fallback" - try COLUMN_ALIASES first; if no alias matches, use the older
 #              built-in heuristics such as finding columns containing "freez".
 
-COLUMN_MATCH_MODE = "fallback"
+COLUMN_MATCH_MODE = "strict"
 
 COLUMN_ALIASES = {
     "time": [
@@ -194,11 +206,12 @@ FREEZING_SUBFOLDER  = "% time freezing"
 PLATFORM_SUBFOLDER  = "% time on platform"
 LATENCY_SUBFOLDER   = "latency to platform"
 EEE_SUBFOLDER       = "Shock outcomes (evade-escape-endure)"
+EVENT_RASTER_SUBFOLDER = "event rasters"
 
 
 # ── Freezing sub-analyses ────────────────────────────────────────────────────
 
-FREEZING_BOUTS      = True   # also compute and plot freezing bout counts
+FREEZING_BOUTS      = False   # also compute and plot freezing bout counts
 FREEZING_BY_SEX     = False  # generate sex × treatment breakdown figures
 FREEZING_BY_LITTER  = False   # generate litter-level figures
                               # (requires litter_id column in metadata)
@@ -207,7 +220,7 @@ FREEZING_BY_LITTER  = False   # generate litter-level figures
 # ── Platform sub-analyses ────────────────────────────────────────────────────
 
 PLATFORM_LATENCY    = True   # also compute latency to first platform entry
-PLATFORM_BY_SEX     = False  # generate sex × treatment breakdown figures
+PLATFORM_BY_SEX     = True  # generate sex × treatment breakdown figures
 
 
 # ── EEE sub-analyses ─────────────────────────────────────────────────────────
@@ -226,11 +239,12 @@ EEE_BY_SEX          = False  # generate sex × treatment stacked bar figures
 #   using the same trial detection logic as platform_analysis.py. Works for
 #   all sessions including yoked controls.
 
-USE_SHOCKER_COLUMN     = True
+USE_SHOCKER_COLUMN     = False
 US_DURATION_S          = 2.0    # Mode B only: assumed shock window length (seconds)
 
 US_CHANCE_BASELINE_PCT = 16.4   # Subtracted from platform_pct to give "above chance".
-                                 # Default = 16.4%, the chance level for this paradigm.
+                                 # Default = 16.4%, the chance level for this paradigm,
+                                 # based on the % space the platform occupies in the arena.
 
 # Restrict which treatment groups are processed in the US-locked analysis.
 # Only treatments defined in TREATMENT_ALIASES above are valid.
@@ -287,6 +301,7 @@ def main():
     control_label    = list(TREATMENT_ALIASES.keys())[0]
 
     cfg = dict(
+        n_workers               = N_WORKERS,
         behaviordata_dirs       = behaviordata_dirs,
         analysis_out            = analysis_out,
         treatment_lookup        = treatment_lookup,
@@ -301,6 +316,7 @@ def main():
         platform_subfolder      = PLATFORM_SUBFOLDER,
         latency_subfolder       = LATENCY_SUBFOLDER,
         eee_subfolder           = EEE_SUBFOLDER,
+        event_raster_subfolder  = EVENT_RASTER_SUBFOLDER,
         freezing_bouts          = FREEZING_BOUTS,
         freezing_by_sex         = FREEZING_BY_SEX,
         freezing_by_litter      = FREEZING_BY_LITTER,
@@ -329,6 +345,7 @@ def main():
         run_platform            = RUN_PLATFORM,
         run_eee                 = RUN_EEE,
         run_us_locked           = RUN_US_LOCKED,
+        run_event_raster        = RUN_EVENT_RASTER,
         run_speed               = RUN_SPEED,
     )
 
@@ -368,7 +385,14 @@ def main():
         print("="*60)
         from us_locked_analysis import run as run_us_locked
         run_us_locked(cfg, report=report)
-        
+
+    if RUN_EVENT_RASTER:
+        print("\n" + "="*60)
+        print("EVENT AND BEHAVIORAL RASTERS")
+        print("="*60)
+        from event_raster_analysis import run as run_event_raster
+        run_event_raster(cfg, report=report)
+
     if RUN_SPEED:
         print("\n" + "="*60)
         print("SPEED ANALYSIS")
