@@ -83,60 +83,47 @@ def _process_file(csv_path, meta, day_dir, behaviordata_root, cfg):
     report_data = {"subjects": {}, "exclusions": {}}
     subject_key = csv_path.name
 
-    test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
-    if behavior_id is None:
-        print(f"  [warn] Could not parse behavior_id from {csv_path.name}; skipping.")
-        report_data["exclusions"][subject_key] = "could not parse behavior_id from filename"
+    test_date, behavior_id, row, exclusion_reason = utils.metadata_for_csv(csv_path, meta)
+    if exclusion_reason is not None:
+        print(f"  [warn] {csv_path.name}: {exclusion_reason}; skipping.")
+        report_data["exclusions"][subject_key] = exclusion_reason
         return [], report_data
 
-    row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
-        if meta is not None else pd.DataFrame()
-    if row_meta.empty:
-        print(f"  [warn] behavior_id '{behavior_id}' not in metadata; skipping {csv_path.name}.")
-        report_data["exclusions"][subject_key] = \
-            f"behavior_id '{behavior_id}' not found in metadata"
-        return [], report_data
-
-    row       = row_meta.iloc[0]
     animal_id = row.get("animal_id", behavior_id)
     treatment = utils.normalize_treatment(
         row.get("treatment_group", "Unknown"), cfg["treatment_lookup"])
     sex       = utils.normalize_sex(row.get("sex", None))
     cohort_id = row.get("cohort_id", None)
 
-    df = utils.load_csv(csv_path)
+    df_header = utils.load_csv_header(csv_path)
+    shocker_col = None
+    us_on = us_off = None
     try:
-        time_col     = utils.find_time_col(df, cfg)
-        platform_col = utils.find_platform_col(df, cfg)
+        time_col     = utils.find_time_col(df_header, cfg)
+        platform_col = utils.find_platform_col(df_header, cfg)
+        source_cols = [time_col, platform_col] + utils.trial_detection_source_columns(df_header, cfg)
+        if cfg.get("use_shocker_column"):
+            shocker_col = utils.find_shocker_col(df_header, cfg)
+            if shocker_col is None:
+                msg = "USE_SHOCKER_COLUMN is True, but no Shocker active column was found"
+                print(f"  [warn] {csv_path.name}: {msg}; skipping.")
+                report_data["exclusions"][subject_key] = msg
+                return [], report_data
+            source_cols.append(shocker_col)
+        else:
+            us_on, us_off = utils.find_us_cols(df_header, cfg)
+            source_cols.extend([us_on, us_off])
+        source_cols = utils.unique_existing_columns(df_header, source_cols)
     except ValueError as e:
         print(f"  [warn] {csv_path.name}: {e}; skipping.")
         report_data["exclusions"][subject_key] = str(e)
         return [], report_data
 
+    # EEE only needs platform occupancy plus CS/US timing columns, so avoid
+    # parsing the rest of the AnyMaze export for this file.
+    df = utils.load_csv(csv_path, usecols=source_cols)
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
     trials, _, cs_source = utils.detect_trials(df, time_col, cfg)
-
-    shocker_col = None
-    us_on = us_off = None
-    if cfg.get("use_shocker_column"):
-        try:
-            shocker_col = utils.find_shocker_col(df, cfg)
-        except ValueError as e:
-            print(f"  [warn] {csv_path.name}: {e}; skipping.")
-            report_data["exclusions"][subject_key] = str(e)
-            return [], report_data
-        if shocker_col is None:
-            msg = "USE_SHOCKER_COLUMN is True, but no Shocker active column was found"
-            print(f"  [warn] {csv_path.name}: {msg}; skipping.")
-            report_data["exclusions"][subject_key] = msg
-            return [], report_data
-    else:
-        try:
-            us_on, us_off = utils.find_us_cols(df, cfg)
-        except ValueError as e:
-            print(f"  [warn] {csv_path.name}: {e}; skipping.")
-            report_data["exclusions"][subject_key] = str(e)
-            return [], report_data
 
     cs_trials = [t for t in trials if t["type"] == "CS+"]
     if not cs_trials:
@@ -284,6 +271,16 @@ def _group_means(per_animal, by_sex=False):
 
 # ── Figures (unchanged) ───────────────────────────────────────────────────────
 
+def _strip_n_count_label(label):
+    lines = []
+    for part in str(label).splitlines():
+        compact = part.strip().lower().replace(" ", "")
+        if compact.startswith("n="):
+            continue
+        lines.append(part)
+    return "\n".join(lines)
+
+
 def _stacked_bar_panel(ax, group_means, x_keys, x_labels):
     evade  = np.array([group_means.get(k, {}).get("evade_pct",  0.0) for k in x_keys])
     escape = np.array([group_means.get(k, {}).get("escape_pct", 0.0) for k in x_keys])
@@ -293,7 +290,8 @@ def _stacked_bar_panel(ax, group_means, x_keys, x_labels):
     ax.bar(x, escape, width=bar_w, bottom=evade, color=OUTCOME_COLORS["escape"])
     ax.bar(x, endure, width=bar_w, bottom=evade+escape, color=OUTCOME_COLORS["endure"])
     ax.set_xticks(x)
-    ax.set_xticklabels(x_labels, fontsize=9, linespacing=1.2)
+    ax.set_xticklabels([_strip_n_count_label(lbl) for lbl in x_labels],
+                       fontsize=9, linespacing=1.2)
     ax.set_ylim(0, 100)
     ax.grid(True, axis="y", alpha=0.3)
     ax.margins(x=0.15)
@@ -376,11 +374,11 @@ def _write_outputs(df, out_dir, cfg, fname_tag):
 
     gm_no_sex = _group_means(per_animal, by_sex=False)
     _make_stacked_bars(gm_no_sex, out_dir, cfg, by_sex=False,
-                        fname_tag=f"{fname_tag}_stacked_by_treatment")
+                        fname_tag=f"{fname_tag}_stacked_by_treatment_tiled")
     if cfg["eee_by_sex"]:
         gm_sex = _group_means(per_animal, by_sex=True)
         _make_stacked_bars(gm_sex, out_dir, cfg, by_sex=True,
-                            fname_tag=f"{fname_tag}_stacked_by_sex_treatment")
+                            fname_tag=f"{fname_tag}_stacked_by_sex_treatment_tiled")
     if cfg["prism_export"]:
         _prism_export(per_animal, out_dir)
 
@@ -418,15 +416,5 @@ def run(cfg, report=None):
             cohort_out = cohort_bd / "Analysis" / cfg["eee_subfolder"]
             print(f"  Writing cohort '{cohort_id}' outputs to {cohort_out}")
             _write_outputs(cohort_df.copy(), cohort_out, cfg, f"eee_{cohort_id}")
-
-    # Per-day outputs
-    if "_day_dir" in df.columns:
-        for day_dir_str, day_df in df.groupby("_day_dir", dropna=False):
-            if pd.isna(day_dir_str):
-                continue
-            day_path = Path(day_dir_str)
-            day_out  = day_path / "Analysis" / cfg["eee_subfolder"]
-            print(f"  Writing day outputs to {day_out}")
-            _write_outputs(day_df.copy(), day_out, cfg, f"eee_{day_path.name}")
 
     print("  EEE analysis complete.")

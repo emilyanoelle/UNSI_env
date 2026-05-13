@@ -8,8 +8,7 @@ moment of shock delivery rather than the full CS+ trial window.
 
 from pathlib import Path
 import re
-import sys
-from datetime import datetime
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -86,26 +85,15 @@ def _get_us_windows_mode_b(cs_trials, us_duration_s):
 
 # ── Per-file processing ─────────────────────────────────────────────────────
 
-def _process_file(csv_path, meta, day_dir, cfg, run_log, report=None):
-    test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
+def _process_file(csv_path, meta, day_dir, cfg):
+    report_data = {"subjects": {}, "exclusions": {}, "subject_logs": {}}
     subject_key = csv_path.name
 
-    if behavior_id is None:
-        run_log["excluded_subjects"][subject_key] = "could_not_parse_behavior_id"
-        if report is not None:
-            rr.record_exclusion(report, "us_locked", subject_key,
-                                "could not parse behavior_id from filename")
-        return []
+    test_date, behavior_id, row, exclusion_reason = utils.metadata_for_csv(csv_path, meta)
+    if exclusion_reason is not None:
+        report_data["exclusions"][subject_key] = exclusion_reason
+        return [], report_data
 
-    row_meta = utils.find_metadata_for_behavior(meta, behavior_id) if meta is not None else pd.DataFrame()
-    if row_meta.empty:
-        run_log["excluded_subjects"][subject_key] = f"behavior_id '{behavior_id}' not found in metadata"
-        if report is not None:
-            rr.record_exclusion(report, "us_locked", subject_key,
-                                f"behavior_id '{behavior_id}' not found in metadata")
-        return []
-
-    row       = row_meta.iloc[0]
     animal_id = row.get("animal_id", behavior_id)
     cohort_id = row.get("cohort_id", None)
     treatment = utils.normalize_treatment(row.get("treatment_group", "Unknown"), cfg["treatment_lookup"])
@@ -116,41 +104,40 @@ def _process_file(csv_path, meta, day_dir, cfg, run_log, report=None):
 
     if treatment not in canonical:
         reason = f"treatment '{treatment}' not in canonical groups {canonical}"
-        run_log["excluded_subjects"][subject_key] = reason
-        if report is not None:
-            rr.record_exclusion(report, "us_locked", subject_key, reason)
-        return []
+        report_data["exclusions"][subject_key] = reason
+        return [], report_data
 
     if include is not None and treatment not in include:
         reason = f"treatment '{treatment}' not in INCLUDE_TREATMENTS {include}"
-        run_log["excluded_subjects"][subject_key] = reason
-        if report is not None:
-            rr.record_exclusion(report, "us_locked", subject_key, reason)
-        return []
+        report_data["exclusions"][subject_key] = reason
+        return [], report_data
 
     if behavior_id in cfg.get("exclude_behavior_ids", []):
         reason = "explicitly excluded via EXCLUDE_BEHAVIOR_IDS"
-        run_log["excluded_subjects"][subject_key] = reason
-        if report is not None:
-            rr.record_exclusion(report, "us_locked", subject_key, reason)
-        return []
+        report_data["exclusions"][subject_key] = reason
+        return [], report_data
 
-    df = utils.load_csv(csv_path)
+    df_header = utils.load_csv_header(csv_path)
     subject_log = {"columns_used": {}, "skipped_analyses": [], "warnings": []}
 
     try:
-        time_col = utils.find_time_col(df, cfg)
-        platform_col = utils.find_platform_col(df, cfg)
+        time_col = utils.find_time_col(df_header, cfg)
+        platform_col = utils.find_platform_col(df_header, cfg)
+        source_cols = [time_col, platform_col] + utils.trial_detection_source_columns(df_header, cfg)
+        if cfg["use_shocker_column"]:
+            source_cols.append(utils.find_shocker_col(df_header, cfg))
+        source_cols = utils.unique_existing_columns(df_header, source_cols)
         subject_log["columns_used"]["time"] = time_col
         subject_log["columns_used"]["in_platform"] = platform_col
     except ValueError as e:
         subject_log["skipped_analyses"].append(f"column match error: {e}")
-        run_log["subject_logs"][subject_key] = subject_log
-        run_log["excluded_subjects"][subject_key] = str(e)
-        if report is not None:
-            rr.record_exclusion(report, "us_locked", subject_key, str(e))
-        return []
+        report_data["subject_logs"][subject_key] = subject_log
+        report_data["exclusions"][subject_key] = str(e)
+        return [], report_data
 
+    # US-locked output only uses platform occupancy, CS timing, and optionally
+    # the shocker state column; skipping other columns keeps worker reads small.
+    df = utils.load_csv(csv_path, usecols=source_cols)
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
     trials, _, cs_source = utils.detect_trials(df, time_col, cfg)
     subject_log["columns_used"]["CS+_detection"] = cs_source
@@ -158,29 +145,23 @@ def _process_file(csv_path, meta, day_dir, cfg, run_log, report=None):
     cs_trials = [tr for tr in trials if tr["type"] == "CS+"]
     if not cs_trials:
         subject_log["skipped_analyses"].append("no CS+ trials detected")
-        run_log["subject_logs"][subject_key] = subject_log
-        if report is not None:
-            rr.record_exclusion(report, "us_locked", subject_key, "no CS+ trials detected")
-        return []
+        report_data["subject_logs"][subject_key] = subject_log
+        report_data["exclusions"][subject_key] = "no CS+ trials detected"
+        return [], report_data
 
     if cfg["use_shocker_column"]:
         try:
             us_windows, us_source = _get_us_windows_mode_a(df, time_col, cs_trials, cfg)
         except ValueError as e:
             subject_log["skipped_analyses"].append(f"column match error: {e}")
-            run_log["subject_logs"][subject_key] = subject_log
-            run_log["excluded_subjects"][subject_key] = str(e)
-            if report is not None:
-                rr.record_exclusion(report, "us_locked", subject_key, str(e))
-            return []
+            report_data["subject_logs"][subject_key] = subject_log
+            report_data["exclusions"][subject_key] = str(e)
+            return [], report_data
         if us_windows is None:
             subject_log["skipped_analyses"].append(f"Mode A selected but: {us_source}")
-            run_log["subject_logs"][subject_key] = subject_log
-            run_log["excluded_subjects"][subject_key] = us_source
-            if report is not None:
-                rr.record_exclusion(report, "us_locked", subject_key,
-                                    f"Mode A: {us_source}")
-            return []
+            report_data["subject_logs"][subject_key] = subject_log
+            report_data["exclusions"][subject_key] = f"Mode A: {us_source}"
+            return [], report_data
     else:
         us_windows, us_source = _get_us_windows_mode_b(cs_trials, cfg["us_duration_s"])
 
@@ -188,17 +169,16 @@ def _process_file(csv_path, meta, day_dir, cfg, run_log, report=None):
 
     if not us_windows:
         subject_log["skipped_analyses"].append("no US windows detected")
-        run_log["subject_logs"][subject_key] = subject_log
-        if report is not None:
-            rr.record_exclusion(report, "us_locked", subject_key, "no US windows detected")
-        return []
+        report_data["subject_logs"][subject_key] = subject_log
+        report_data["exclusions"][subject_key] = "no US windows detected"
+        return [], report_data
 
     # Success — record to run_report
-    if report is not None:
-        rr.record_subject(report, "us_locked", subject_key,
-                          columns_used=subject_log["columns_used"],
-                          warnings=subject_log["warnings"],
-                          skipped=subject_log["skipped_analyses"])
+    report_data["subjects"][subject_key] = {
+        "columns_used": subject_log["columns_used"],
+        "warnings": subject_log["warnings"],
+        "skipped": subject_log["skipped_analyses"],
+    }
 
     t = df[time_col].astype(float).to_numpy()
     p = df[platform_col].fillna(0).astype(float).to_numpy()
@@ -220,6 +200,7 @@ def _process_file(csv_path, meta, day_dir, cfg, run_log, report=None):
             "context":                 context,
             "session_label":           session,
             "_day_folder":             day_dir.name,
+            "_day_dir":                str(day_dir),
             "_source_csv":             csv_path.name,
             "us_number":               w["trial_index"],
             "us_start_s":              w["start"],
@@ -229,18 +210,91 @@ def _process_file(csv_path, meta, day_dir, cfg, run_log, report=None):
             "platform_pct_above_chance": plat_pct - cfg["us_chance_baseline_pct"],
         })
 
-    run_log["subject_logs"][subject_key] = subject_log
-    return rows
+    report_data["subject_logs"][subject_key] = subject_log
+    return rows, report_data
+
+
+def _process_file_star(args):
+    return _process_file(*args)
+
+
+# Worker processes return report payloads instead of mutating the shared Excel
+# report object directly; the parent process records them safely here.
+def _merge_report_data(report, report_data):
+    if report is None:
+        return
+    for key, info in report_data["subjects"].items():
+        rr.record_subject(report, "us_locked", key,
+                          columns_used=info["columns_used"],
+                          warnings=info["warnings"],
+                          skipped=info["skipped"])
+    for key, reason in report_data["exclusions"].items():
+        rr.record_exclusion(report, "us_locked", key, reason)
+
+
+def _collect_all_parallel(cfg, report=None):
+    tasks = []
+    task_bd = []
+
+    for bd in cfg["behaviordata_dirs"]:
+        bd_cfg = {**cfg, "behaviordata": bd}
+        meta   = utils.load_metadata(bd)
+        suffix = cfg["csv_suffix"]
+        for day_dir in utils.find_session_dirs(bd):
+            csvs = sorted(
+                day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
+            for csv_path in csvs:
+                tasks.append((csv_path, meta, day_dir, bd_cfg))
+                task_bd.append(bd)
+
+    if not tasks:
+        print("  [warn] No CSV files found.")
+        return {}
+
+    print(f"  Found {len(tasks)} CSV files. Processing with {cfg['n_workers']} workers...")
+
+    day_results = {}
+    with ProcessPoolExecutor(max_workers=cfg["n_workers"]) as pool:
+        # Results complete out of order; keep each task's day/cohort context so
+        # session CSVs and heatmaps are written to the right place.
+        future_to_idx = {
+            pool.submit(_process_file_star, t): i
+            for i, t in enumerate(tasks)
+        }
+        for future in as_completed(future_to_idx):
+            idx      = future_to_idx[future]
+            csv_path = tasks[idx][0]
+            day_dir  = tasks[idx][2]
+            bd       = task_bd[idx]
+            day_key  = str(day_dir)
+            info = day_results.setdefault(day_key, {
+                "bd":      bd,
+                "day_dir": day_dir,
+                "rows":    [],
+                "cfg":     {**cfg, "behaviordata": bd},
+            })
+
+            try:
+                rows, report_data = future.result()
+            except Exception as exc:
+                print(f"  [error] {csv_path.name} raised an exception: {exc}")
+                continue
+
+            info["rows"].extend(rows)
+            _merge_report_data(report, report_data)
+
+    return day_results
 
 
 # ── Data collection ─────────────────────────────────────────────────────────
 
-def _collect_day(day_dir, meta, cfg, run_log, report=None):
+def _collect_day(day_dir, meta, cfg, report=None):
     suffix   = cfg["csv_suffix"]
     all_rows = []
     csvs = sorted(day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
     for csv_path in csvs:
-        rows = _process_file(csv_path, meta, day_dir, cfg, run_log, report=report)
+        rows, report_data = _process_file(csv_path, meta, day_dir, cfg)
+        _merge_report_data(report, report_data)
         all_rows.extend(rows)
     return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
@@ -411,9 +465,8 @@ def _make_tiled_treatment_figure(df_trt, treatment, out_dir, cfg):
     cbar = fig.colorbar(last_mappable, ax=axes.tolist(), shrink=0.85, pad=0.015)
     cbar.set_label("% platform time during US\n(above chance)")
 
-    trt_dir = out_dir / treatment
-    trt_dir.mkdir(parents=True, exist_ok=True)
-    utils.save_fig(fig, trt_dir / f"us_locked_heatmap_{treatment}_tiled.svg")
+    out_dir.mkdir(parents=True, exist_ok=True)
+    utils.save_fig(fig, out_dir / f"us_locked_heatmap_{treatment}_tiled.svg")
 
 
 # ── Prism export ────────────────────────────────────────────────────────────
@@ -439,61 +492,21 @@ def _prism_export(df, out_dir, tag, subject_col="animal_id"):
 
 # ── Shock avoidance summary ─────────────────────────────────────────────────
 
-def _shock_avoidance(df, out_dir, tag):
+def _shock_avoidance(df, out_dir):
+    group_cols = ["treatment_group", "cohort_id", "animal_id", "_day_folder"]
+    # Start from every subject in this treatment/day, then merge avoided-shock
+    # counts so animals with zero avoided shocks remain explicit rows.
+    subjects = df[group_cols].drop_duplicates()
     avoided = df[df["platform_pct"] >= 100.0].copy()
-    summary = (avoided.groupby(["treatment_group", "cohort_id", "animal_id", "_day_folder"],
-                               dropna=False, as_index=False, sort=False)
-               .agg(shocks_avoided=("us_number", "count")))
-    out_path = out_dir / f"{tag}_shock_avoidance.csv"
+    avoided_counts = (
+        avoided.groupby(group_cols, dropna=False, as_index=False, sort=False)
+        .agg(shocks_avoided=("us_number", "count"))
+    )
+    summary = subjects.merge(avoided_counts, on=group_cols, how="left", sort=False)
+    summary["shocks_avoided"] = summary["shocks_avoided"].fillna(0).astype(int)
+    out_path = out_dir / "us_locked_shock_avoidance.csv"
     summary.to_csv(out_path, index=False)
     print(f"[ok] Shock avoidance summary saved: {out_path}")
-
-
-# ── Legacy txt run report ───────────────────────────────────────────────────
-
-def _write_run_report(out_dir, cfg, run_log):
-    report_path = out_dir / "us_locked_run_report.txt"
-    lines = []
-    lines.append("=" * 70)
-    lines.append("US-LOCKED PLATFORM ANALYSIS — RUN REPORT")
-    lines.append("=" * 70)
-    lines.append(f"Timestamp : {run_log['timestamp']}")
-    lines.append(f"Python    : {run_log['python_version']}")
-    lines.append("")
-    lines.append("--- Runner settings ---")
-    for k in ["use_shocker_column","us_duration_s","us_chance_baseline_pct",
-              "include_treatments","exclude_behavior_ids","heatmap_sort",
-              "column_match_mode","prism_export","cs_trial_cap"]:
-        lines.append(f"  {k:<30} {cfg.get(k)}")
-    lines.append("")
-    lines.append("--- Included treatments ---")
-    for t in run_log.get("included_treatments", []):
-        lines.append(f"  {t}")
-    lines.append("")
-    lines.append("--- Excluded subjects ---")
-    excl = run_log.get("excluded_subjects", {})
-    if excl:
-        for subj, reason in excl.items():
-            lines.append(f"  {subj:<50} reason: {reason}")
-    else:
-        lines.append("  (none)")
-    lines.append("")
-    lines.append("--- Per-subject validation log ---")
-    slogs = run_log.get("subject_logs", {})
-    if slogs:
-        for subj, slog in slogs.items():
-            lines.append(f"  {subj}")
-            for k, v in slog.get("columns_used", {}).items():
-                lines.append(f"    columns_used.{k:<25} {v}")
-            for w in slog.get("warnings", []):
-                lines.append(f"    WARNING: {w}")
-            for s in slog.get("skipped_analyses", []):
-                lines.append(f"    SKIPPED: {s}")
-    else:
-        lines.append("  (no subjects processed)")
-    lines.append("=" * 70)
-    report_path.write_text("\n".join(lines), encoding="utf-8")
-    print(f"[ok] Run report saved: {report_path}")
 
 
 # ── Entry point ─────────────────────────────────────────────────────────────
@@ -503,54 +516,49 @@ def run(cfg, report=None):
     combined_root.mkdir(parents=True, exist_ok=True)
     combined_rows = []
 
-    for bd in cfg["behaviordata_dirs"]:
-        bd_cfg = {**cfg, "behaviordata": bd}
-        meta   = utils.load_metadata(bd)
+    print("  Collecting US-locked data in parallel...")
+    day_results = _collect_all_parallel(cfg, report=report)
 
-        for day_dir in utils.find_session_dirs(bd):
-            run_log = {
-                "timestamp":          datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "python_version":     sys.version,
-                "excluded_subjects":  {},
-                "subject_logs":       {},
-                "included_treatments": [],
-            }
+    ordered_days = sorted(
+        day_results.values(),
+        key=lambda info: (str(info["bd"]), utils.day_sort_key(info["day_dir"].name)),
+    )
 
-            print(f"  Collecting US-locked data from: {day_dir.name}")
-            df_day = _collect_day(day_dir, meta, bd_cfg, run_log, report=report)
+    for info in ordered_days:
+        bd      = info["bd"]
+        bd_cfg  = info["cfg"]
+        day_dir = info["day_dir"]
+        df_day  = pd.DataFrame(info["rows"]) if info["rows"] else pd.DataFrame()
 
-            day_out = day_dir / "Analysis" / "US_lock_plttime"
-            day_out.mkdir(parents=True, exist_ok=True)
+        print(f"  Writing US-locked outputs for: {day_dir.name}")
+        day_out = day_dir / "Analysis" / "US_lock_plttime"
+        day_out.mkdir(parents=True, exist_ok=True)
 
-            if df_day.empty:
-                print(f"  [warn] No US-locked data found in {day_dir.name}. Skipping.")
+        if df_day.empty:
+            print(f"  [warn] No US-locked data found in {day_dir.name}. Skipping.")
+            continue
+
+        df_day.to_csv(day_out / "us_locked_all_days_concat.csv", index=False)
+        print(f"  [ok] Session CSV saved: {day_out / 'us_locked_all_days_concat.csv'}")
+
+        _shock_avoidance(df_day, day_out)
+
+        for trt in cfg["canonical_groups"]:
+            include = cfg.get("include_treatments")
+            if include is not None and trt not in include:
                 continue
+            df_trt = df_day[df_day["treatment_group"] == trt]
+            if df_trt.empty:
+                continue
+            df_trt_plot = _apply_plot_trial_caps(df_trt, bd_cfg)
+            fig, _, _ = _make_heatmap(df_trt_plot, trt, day_out, bd_cfg,
+                                      label_suffix=day_dir.name)
+            if fig is not None:
+                utils.save_fig(fig, day_out / f"us_locked_heatmap_{trt}.svg")
+            if cfg.get("prism_export"):
+                _prism_export(df_trt_plot, day_out, trt)
 
-            df_day.to_csv(day_out / "us_locked_all_days_concat.csv", index=False)
-            print(f"  [ok] Session CSV saved: {day_out / 'us_locked_all_days_concat.csv'}")
-
-            run_log["included_treatments"] = df_day["treatment_group"].dropna().unique().tolist()
-            _write_run_report(day_out, bd_cfg, run_log)
-
-            for trt in cfg["canonical_groups"]:
-                include = cfg.get("include_treatments")
-                if include is not None and trt not in include:
-                    continue
-                df_trt = df_day[df_day["treatment_group"] == trt]
-                if df_trt.empty:
-                    continue
-                trt_dir = day_out / trt
-                trt_dir.mkdir(parents=True, exist_ok=True)
-                df_trt_plot = _apply_plot_trial_caps(df_trt, bd_cfg)
-                _shock_avoidance(df_trt, trt_dir, trt)
-                fig, _, _ = _make_heatmap(df_trt_plot, trt, trt_dir, bd_cfg,
-                                          label_suffix=day_dir.name)
-                if fig is not None:
-                    utils.save_fig(fig, trt_dir / f"us_locked_heatmap_{trt}.svg")
-                if cfg.get("prism_export"):
-                    _prism_export(df_trt_plot, trt_dir, trt)
-
-            combined_rows.append(df_day.assign(_behaviordata=bd.name))
+        combined_rows.append(df_day.assign(_behaviordata=bd.name))
 
     if not combined_rows:
         print("  [warn] No US-locked data found across any BehaviorData directory.")

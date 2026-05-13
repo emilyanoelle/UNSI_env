@@ -50,16 +50,10 @@ def _collect_raw(behaviordata: Path, meta: pd.DataFrame, cfg: dict) -> pd.DataFr
             day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv")
         )
         for csv_path in csvs:
-            test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
-            if behavior_id is None:
+            test_date, behavior_id, row, exclusion_reason = utils.metadata_for_csv(csv_path, meta)
+            if exclusion_reason is not None:
                 continue
 
-            row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
-                if meta is not None else pd.DataFrame()
-            if row_meta.empty:
-                continue
-
-            row       = row_meta.iloc[0]
             animal_id = row.get("animal_id", behavior_id)
             treatment = utils.normalize_treatment(
                 row.get("treatment_group", "Unknown"), cfg["treatment_lookup"]
@@ -68,13 +62,21 @@ def _collect_raw(behaviordata: Path, meta: pd.DataFrame, cfg: dict) -> pd.DataFr
             cohort_id = row.get("cohort_id", None)
             litter_id = row.get("litter_id", None)
 
-            df = utils.load_csv(csv_path)
             try:
-                time_col   = utils.find_time_col(df, cfg)
-                freeze_col = utils.find_freeze_col(df, cfg)
+                df_header = utils.load_csv_header(csv_path)
+                time_col   = utils.find_time_col(df_header, cfg)
+                freeze_col = utils.find_freeze_col(df_header, cfg)
+                source_cols = utils.unique_existing_columns(
+                    df_header,
+                    [time_col, freeze_col]
+                    + utils.trial_detection_source_columns(df_header, cfg),
+                )
             except ValueError:
                 continue
 
+            # Sanity checks only need freezing coverage and trial windows, so
+            # avoid parsing unrelated AnyMaze columns during optional QA runs.
+            df = utils.load_csv(csv_path, usecols=source_cols)
             df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
 
             try:

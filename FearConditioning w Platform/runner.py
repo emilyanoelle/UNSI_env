@@ -35,14 +35,15 @@ N_WORKERS = 5
 # Use raw strings (the r prefix) to avoid issues with backslashes on Windows.
 
 BEHAVIORDATA_DIRS = [
-    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData"
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData",
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 2\BehaviorData"
 ]
 
 # Top-level folder where combined across-cohort outputs are written.
 # Per-session outputs are always written inside their own BehaviorData folder.
 # Cohort-specific across-session outputs go to:
 #   <BehaviorData>/<cohort_id>/Analysis/<subfolder>/
-ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis5"
+ANALYSIS_OUTPUT_DIR = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis-CohortA-C"
 
 
 # ── Treatment group configuration ────────────────────────────────────────────
@@ -60,8 +61,8 @@ TREATMENT_ALIASES = {
 # Female colors and unknown-sex colors are derived automatically as lighter
 # tints — you do not need to specify them separately.
 TREATMENT_COLORS = {
-    "ctrl": "#96A6AC",
-    "ELS":     "#E26E2B",
+    "ctrl": "#729BAA",
+    "ELS":     "#E97A3A",
 }
 
 
@@ -75,8 +76,47 @@ RUN_PLATFORM        = False    # % time on platform + latency to platform (if en
 RUN_EEE             = False    # Evade / Escape / Endure shock outcome classification
 RUN_US_LOCKED       = False    # % platform time locked to the shock delivery window
 RUN_EVENT_RASTER    = False    # per-session event/behavior raster SVGs (pass 1 only)
-RUN_SPEED           = True     # CS-locked speed analysis
+RUN_SPEED           = False     # CS-locked speed analysis
+RUN_HIGH_SPEED_BOUTS = False    # requires running standalone HMM_analysis.py first
+RUN_STATISTICS      = True     # R-backed 2-way RM ANOVA / mixed models for freezing + platform
 
+# ── Freezing sub-analyses ────────────────────────────────────────────────────
+
+FREEZING_BOUTS      = True   # also compute and plot freezing bout counts
+FREEZING_BY_SEX     = False   # generate sex × treatment breakdown figures
+FREEZING_BY_LITTER  = True   # generate litter-level figures
+
+
+# ── Platform sub-analyses ────────────────────────────────────────────────────
+
+PLATFORM_LATENCY    = True   # also compute latency to first platform entry
+PLATFORM_BY_SEX     = False  # generate sex × treatment breakdown figures
+
+
+# ── Statistics settings ────────────────────────────────────────────────────
+#
+# Statistics run after the freezing/platform concat tables exist. The module
+# is a Python wrapper around statistics_2way_anova.R and automatically splits
+# by measure, session day, and trial type.
+
+STATS_BY_COHORT              = False  # Pass 2: optional cohort-level statistics
+STATS_COMBINED               = True   # Pass 3: write collapsed cross-cohort statistics
+STATS_USE_GREENHOUSE_GEISSER = True   # apply GG correction to balanced RM ANOVAs
+STATS_RSCRIPT_PATH           = "Rscript"  # change if Rscript is not on PATH
+STATS_INCLUDE_TREATMENTS     = list(TREATMENT_ALIASES.keys())  # None = include every treatment label
+
+# Optional: use a command list when Rscript only works through an activated
+# environment. This rstats conda environment was detected on this machine.
+# Set to None to use STATS_RSCRIPT_PATH directly.
+STATS_RSCRIPT_COMMAND = [
+    r"C:\Users\ventrigliaen\AppData\Local\anaconda3\Scripts\conda.exe",
+    "run", "-n", "rstats", "Rscript",
+]
+
+
+# ── EEE sub-analyses ─────────────────────────────────────────────────────────
+
+EEE_BY_SEX          = False  # generate sex × treatment stacked bar figures
 
 # ── CS+ / CS- trial detection ────────────────────────────────────────────────
 #
@@ -119,64 +159,27 @@ TONE_STATUS_COL_CSMINUS = "cs minus tone status"
 COLUMN_MATCH_MODE = "strict"
 
 COLUMN_ALIASES = {
-    "time": [
-        "Time (s)",
-        "Time",
-    ],
-    "freezing": [
-        "Freezing",
-        "Freezing state",
-    ],
-    "in_platform": [
-        "In platform",
-        "Inside platform",
-    ],
-    "latency_to_platform": [
-        "latency_to_platform_s",
-        "Latency to platform",
-        "Latency to platform (s)",
-    ],
-    "csplus_tone_status": [
-        "CS+ tone status",
-        "CS plus tone status",
-        TONE_STATUS_COL_CSPLUS,
-    ],
-    "csminus_tone_status": [
-        "CS- tone status",
-        "CS minus tone status",
-        TONE_STATUS_COL_CSMINUS,
-    ],
-    "csplus_on": [
-        "CS+ ON activated",
-        "CS plus ON activated",
-    ],
-    "csplus_off": [
-        "CS+ OFF activated",
-        "CS plus OFF activated",
-    ],
-    "csminus_on": [
-        "CS- ON activated",
-        "CS minus ON activated",
-    ],
-    "csminus_off": [
-        "CS- OFF activated",
-        "CS minus OFF activated",
-    ],
-    "us_on": [
-        "US ON activated",
-        "Shock ON activated",
-    ],
-    "us_off": [
-        "US OFF activated",
-        "Shock OFF activated",
-    ],
-    "shocker_active": [
-        "Shocker active",
-    ],
-    "speed": [
-        "Speed (m/s)",
-        "Speed"
-    ]
+    # Core behavior/signal columns
+    "time":                 ["Time (s)", "Time"],
+    "freezing":             ["Freezing", "Freezing state"],
+    "in_platform":          ["In platform", "Inside platform"],
+    "latency_to_platform":  ["latency_to_platform_s", "Latency to platform", "Latency to platform (s)"],
+    "speed":                ["Speed (m/s)", "Speed"],
+
+    # CS+/CS- tone-status columns
+    "csplus_tone_status":   ["CS+ tone status", "CS plus tone status", TONE_STATUS_COL_CSPLUS],
+    "csminus_tone_status":  ["CS- tone status", "CS minus tone status", TONE_STATUS_COL_CSMINUS],
+
+    # CS+/CS- TTL event columns
+    "csplus_on":            ["CS+ ON activated", "CS plus ON activated"],
+    "csplus_off":           ["CS+ OFF activated", "CS plus OFF activated"],
+    "csminus_on":           ["CS- ON activated", "CS minus ON activated"],
+    "csminus_off":          ["CS- OFF activated", "CS minus OFF activated"],
+
+    # US/shock columns
+    "us_on":                ["US ON activated", "Shock ON activated"],
+    "us_off":               ["US OFF activated", "Shock OFF activated"],
+    "shocker_active":       ["Shocker active"],
 }
 
 
@@ -204,27 +207,10 @@ FREEZING_SUBFOLDER  = "% time freezing"
 PLATFORM_SUBFOLDER  = "% time on platform"
 LATENCY_SUBFOLDER   = "latency to platform"
 EEE_SUBFOLDER       = "Shock outcomes (evade-escape-endure)"
+SPEED_SUBFOLDER     = "speed"
 EVENT_RASTER_SUBFOLDER = "event rasters"
-
-
-# ── Freezing sub-analyses ────────────────────────────────────────────────────
-
-FREEZING_BOUTS      = False   # also compute and plot freezing bout counts
-FREEZING_BY_SEX     = False  # generate sex × treatment breakdown figures
-FREEZING_BY_LITTER  = False   # generate litter-level figures
-                              # (requires litter_id column in metadata)
-
-
-# ── Platform sub-analyses ────────────────────────────────────────────────────
-
-PLATFORM_LATENCY    = True   # also compute latency to first platform entry
-PLATFORM_BY_SEX     = True  # generate sex × treatment breakdown figures
-
-
-# ── EEE sub-analyses ─────────────────────────────────────────────────────────
-
-EEE_BY_SEX          = False  # generate sex × treatment stacked bar figures
-
+HIGH_SPEED_SUBFOLDER = "high speed bouts"
+STATISTICS_SUBFOLDER = "statistics"
 
 # ── US-locked settings ───────────────────────────────────────────────────────
 #
@@ -262,8 +248,6 @@ HEATMAP_SORT           = "alphabetical"
 
 # ── Speed Analysis settings ───────────────────────────────────────────────────────────
 
-SPEED_SUBFOLDER  = "speed"   # subfolder name used inside Analysis/
-
 # Window around each CS onset, in seconds.
 # Pre = how many seconds before onset to include (default 30 s = 300 bins).
 # Post = how many seconds after onset to include (default 60 s = 600 bins).
@@ -274,6 +258,33 @@ SPEED_POST_S = 60.0
 # analysis. Set this to True only when you also want Excel workbooks for
 # manual visual checks.
 SPEED_WRITE_EXCEL = False
+
+
+# ── High-speed / darting bout settings ───────────────────────────────────────
+#
+# IMPORTANT: high-speed bout analysis depends on the standalone HMM_analysis.py
+# script. You MUST run HMM_analysis.py first, then set HMM_INPUT_PARQUET below
+# to the exact parquet location written by that script.
+#
+# HMM_analysis.py hardcodes OUTPUT_CSV. When WRITE_PARQUET=True, it writes the
+# matching parquet beside that CSV. Copy the OUTPUT_CSV path here and change the
+# extension from .csv to .parquet.
+#
+# If HMM_INPUT_PARQUET is left unset or the file is missing, runner.py will warn
+# and skip high-speed bouts rather than crashing.
+#
+# The threshold is in the same units as your x/y position columns per 100 ms bin.
+# Example: if x/y are centimeters, 5.0 means 5 cm per 100 ms, or about 50 cm/s.
+
+HMM_INPUT_PARQUET = (
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning"
+    r"\Analysis-CohortA-C\HMM movement\hmm_input.parquet"
+)
+
+HIGH_SPEED_MIN_DISPLACEMENT_PER_100MS = 5.0
+HIGH_SPEED_MIN_BOUT_S = 0.3
+HIGH_SPEED_MAX_GAP_S = 0.2
+HIGH_SPEED_BY_SEX = False
 
 # ── Prism export ─────────────────────────────────────────────────────────────
 #
@@ -320,11 +331,19 @@ def main():
         latency_subfolder       = LATENCY_SUBFOLDER,
         eee_subfolder           = EEE_SUBFOLDER,
         event_raster_subfolder  = EVENT_RASTER_SUBFOLDER,
+        high_speed_subfolder    = HIGH_SPEED_SUBFOLDER,
+        statistics_subfolder    = STATISTICS_SUBFOLDER,
         freezing_bouts          = FREEZING_BOUTS,
         freezing_by_sex         = FREEZING_BY_SEX,
         freezing_by_litter      = FREEZING_BY_LITTER,
         platform_latency        = PLATFORM_LATENCY,
         platform_by_sex         = PLATFORM_BY_SEX,
+        stats_by_cohort         = STATS_BY_COHORT,
+        stats_combined          = STATS_COMBINED,
+        stats_use_greenhouse_geisser = STATS_USE_GREENHOUSE_GEISSER,
+        stats_rscript_path      = STATS_RSCRIPT_PATH,
+        stats_rscript_command   = STATS_RSCRIPT_COMMAND,
+        stats_include_treatments = STATS_INCLUDE_TREATMENTS,
         eee_by_sex              = EEE_BY_SEX,
         prism_export            = PRISM_EXPORT,
         use_shocker_column      = USE_SHOCKER_COLUMN,
@@ -342,6 +361,11 @@ def main():
         speed_pre_bins          = int(round(SPEED_PRE_S  * 10)),  # seconds → 100ms bins
         speed_post_bins         = int(round(SPEED_POST_S * 10)),
         speed_write_excel       = SPEED_WRITE_EXCEL,
+        high_speed_motion_parquet = Path(HMM_INPUT_PARQUET) if HMM_INPUT_PARQUET else None,
+        high_speed_min_displacement_per_100ms = HIGH_SPEED_MIN_DISPLACEMENT_PER_100MS,
+        high_speed_min_bout_s   = HIGH_SPEED_MIN_BOUT_S,
+        high_speed_max_gap_s    = HIGH_SPEED_MAX_GAP_S,
+        high_speed_by_sex       = HIGH_SPEED_BY_SEX,
         
         # run toggles (used by run_report)
         run_sanity_check        = RUN_SANITY_CHECK,
@@ -351,6 +375,8 @@ def main():
         run_us_locked           = RUN_US_LOCKED,
         run_event_raster        = RUN_EVENT_RASTER,
         run_speed               = RUN_SPEED,
+        run_high_speed_bouts    = RUN_HIGH_SPEED_BOUTS is True,
+        run_statistics          = RUN_STATISTICS,
     )
 
     report = run_report.new_report(cfg)
@@ -403,6 +429,25 @@ def main():
         print("="*60)
         from speed_analysis import run as run_speed
         run_speed(cfg, report=report)
+
+    if cfg.get("run_high_speed_bouts") is True:
+        print("\n" + "="*60)
+        print("HIGH-SPEED BOUT ANALYSIS")
+        print("="*60)
+        from high_speed_bout_analysis import run as run_high_speed_bouts
+        run_high_speed_bouts(cfg, report=report)
+
+    # Statistics wrapper
+    #
+    # This Python module reads the freezing/platform concat CSVs produced above,
+    # prepares the Pass 2 / Pass 3 model inputs, then calls the R backend:
+    #   statistics_2way_anova.R
+    if RUN_STATISTICS:
+        print("\n" + "="*60)
+        print("STATISTICS")
+        print("="*60)
+        from statistics_utils import run as run_statistics
+        run_statistics(cfg, report=report)
 
     run_report.write_excel_report(report, analysis_out)
 

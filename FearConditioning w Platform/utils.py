@@ -34,12 +34,65 @@ def norm_colname(c: str) -> str:
     return c
 
 
-def load_csv(path: Path) -> pd.DataFrame:
+def _read_csv_raw(path: Path, **kwargs) -> pd.DataFrame:
     try:
-        df = pd.read_csv(path, engine="python")
+        return pd.read_csv(path, engine="python", **kwargs)
     except Exception:
-        df = pd.read_csv(path, sep=None, engine="python")
+        return pd.read_csv(path, sep=None, engine="python", **kwargs)
+
+
+def _normalize_csv_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.rename(columns={c: norm_colname(c) for c in df.columns})
+
+
+def load_csv(path: Path, usecols: Optional[List[str]] = None) -> pd.DataFrame:
+    kwargs = {}
+    if usecols is not None:
+        wanted = {norm_colname(c) for c in usecols if c is not None}
+        # AnyMaze headers are normalized after loading, so match usecols by the
+        # normalized form while pandas still sees the original on-disk names.
+        kwargs["usecols"] = lambda col: norm_colname(col) in wanted
+    return _normalize_csv_columns(_read_csv_raw(path, **kwargs))
+
+
+def load_csv_header(path: Path) -> pd.DataFrame:
+    return _normalize_csv_columns(_read_csv_raw(path, nrows=0))
+
+
+def unique_existing_columns(df: pd.DataFrame, columns: list) -> list:
+    seen = set()
+    selected = []
+    for col in columns:
+        if col is None or col in seen or col not in df.columns:
+            continue
+        seen.add(col)
+        selected.append(col)
+    return selected
+
+
+def trial_detection_source_columns(df: pd.DataFrame, cfg: dict) -> list:
+    mode = str(cfg.get("cs_detection_mode", "auto")).strip().lower()
+
+    def _tone_status_columns():
+        return list(find_tone_status_cols(
+            df,
+            cfg.get("tone_status_col_csplus", "cs plus tone status"),
+            cfg.get("tone_status_col_csminus", "cs minus tone status"),
+            cfg,
+        ))
+
+    def _ttl_columns():
+        return [col for col in find_ttl_cols(df, cfg) if col is not None]
+
+    if mode == "tone_status":
+        return _tone_status_columns()
+    if mode == "ttl":
+        return _ttl_columns()
+
+    try:
+        return _tone_status_columns()
+    except ValueError:
+        return _ttl_columns()
 
 
 # =============================================================================
@@ -115,11 +168,28 @@ def find_session_dirs(behaviordata: Path, pattern: str = r"^d\d{2}_") -> list:
 # Metadata loading — supports multiple BehaviorData directories
 # =============================================================================
 
+def infer_default_cohort_id(behaviordata: Path) -> str:
+    dates = []
+    for day_dir in find_session_dirs(behaviordata):
+        for csv_path in day_dir.glob("*.csv"):
+            m = re.search(r"(\d{2}-\d{2}-\d{2})", csv_path.stem)
+            if not m:
+                continue
+            try:
+                dates.append(pd.to_datetime(m.group(1), format="%m-%d-%y"))
+            except Exception:
+                continue
+    if dates:
+        return f"cohort_{min(dates).strftime('%m%d%y')}"
+    return f"cohort_{norm_colname(behaviordata.name)}"
+
+
 def load_metadata(behaviordata: Path) -> Optional[pd.DataFrame]:
     """
     Load animals_metadata.xlsx from a single BehaviorData directory.
     Returns a normalized DataFrame or None if not found.
-    If cohort_id is absent, it is synthesized from the folder name.
+    If cohort_id is absent or blank, it is synthesized from the earliest
+    session CSV date as cohort_MMDDYY.
     """
     meta_path = behaviordata / "animals_metadata.xlsx"
     if not meta_path.exists():
@@ -133,11 +203,25 @@ def load_metadata(behaviordata: Path) -> Optional[pd.DataFrame]:
         print("[warn] 'behavior_id' column not found in animals_metadata.xlsx.")
         return None
 
-    # Synthesize cohort_id from folder name if not provided
+    default_cohort_id = infer_default_cohort_id(behaviordata)
+    # Use a date-derived cohort label when metadata leaves cohort_id absent or
+    # blank; explicit nonblank cohort labels are preserved.
     if "cohort_id" not in meta.columns:
-        meta["cohort_id"] = behaviordata.name
+        meta["cohort_id"] = default_cohort_id
         print(f"[info] No cohort_id column found in {meta_path.name}; "
-              f"using folder name '{behaviordata.name}' as cohort_id.")
+              f"using '{default_cohort_id}' as cohort_id.")
+    else:
+        # All-blank Excel columns load as float, so coerce before inserting the
+        # date-derived string fallback.
+        meta["cohort_id"] = meta["cohort_id"].astype("object")
+        blank_cohort = (
+            meta["cohort_id"].isna()
+            | (meta["cohort_id"].astype(str).str.strip() == "")
+        )
+        if blank_cohort.any():
+            meta.loc[blank_cohort, "cohort_id"] = default_cohort_id
+            print(f"[info] Filled blank cohort_id values in {meta_path.name}; "
+                  f"using '{default_cohort_id}' as cohort_id.")
 
     meta["behavior_id"] = meta["behavior_id"].apply(_normalize_key)
     meta = meta[meta["behavior_id"] != ""].copy()
@@ -270,6 +354,26 @@ def parse_filename_bits(csv_path: Path, meta_df: Optional[pd.DataFrame] = None) 
         if meta_bid:
             return date, meta_bid
     return date, bid
+
+
+def metadata_for_csv(csv_path: Path, meta_df: Optional[pd.DataFrame]) -> tuple:
+    test_date, behavior_id = parse_filename_bits(csv_path, meta_df)
+    if behavior_id is None:
+        return test_date, None, None, "could not parse behavior_id from filename"
+
+    row_meta = find_metadata_for_behavior(meta_df, behavior_id) \
+        if meta_df is not None else pd.DataFrame()
+    if row_meta.empty:
+        # Every analysis should share this metadata gate so a file missing from
+        # animals_metadata.xlsx is skipped instead of silently using filename labels.
+        return (
+            test_date,
+            behavior_id,
+            None,
+            f"behavior_id '{behavior_id}' not found in metadata",
+        )
+
+    return test_date, behavior_id, row_meta.iloc[0], None
 
 
 def find_metadata_for_behavior(meta_df: pd.DataFrame, raw_bid: str) -> pd.DataFrame:

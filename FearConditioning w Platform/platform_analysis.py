@@ -6,6 +6,7 @@ Two-pass pipeline for % time on platform and (optionally) latency to platform.
 """
 
 from pathlib import Path
+from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
 import pandas as pd
@@ -32,70 +33,58 @@ def _compute_latency(t, p, start, end):
 
 # ── Pass 1 helpers ──────────────────────────────────────────────────────────
 
-def _process_file(csv_path, meta, day_dir, cfg, report=None):
-    test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
-    if behavior_id is None:
-        print(f"  [warn] Could not parse behavior_id from {csv_path.name}; skipping.")
-        if report is not None:
-            rr.record_exclusion(report, "platform", csv_path.name,
-                                "could not parse behavior_id from filename")
-        return pd.DataFrame()
+def _process_file(csv_path, meta, day_dir, cfg):
+    report_data = {"subjects": {}, "exclusions": {}}
+    subject_key = csv_path.name
 
-    row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
-        if meta is not None else pd.DataFrame()
-    if row_meta.empty:
-        print(f"  [warn] behavior_id '{behavior_id}' not in metadata; skipping {csv_path.name}.")
-        if report is not None:
-            rr.record_exclusion(report, "platform", csv_path.name,
-                                f"behavior_id '{behavior_id}' not found in metadata")
-        return pd.DataFrame()
+    test_date, behavior_id, row, exclusion_reason = utils.metadata_for_csv(csv_path, meta)
+    if exclusion_reason is not None:
+        print(f"  [warn] {csv_path.name}: {exclusion_reason}; skipping.")
+        report_data["exclusions"][subject_key] = exclusion_reason
+        return [], report_data
 
-    row       = row_meta.iloc[0]
     animal_id = row.get("animal_id", behavior_id)
     treatment = utils.normalize_treatment(row.get("treatment_group","Unknown"), cfg["treatment_lookup"])
     sex       = utils.normalize_sex(row.get("sex", None))
     litter_id = row.get("litter_id", None)
     cohort_id = row.get("cohort_id", None)
 
-    df = utils.load_csv(csv_path)
+    df_header = utils.load_csv_header(csv_path)
     try:
-        time_col = utils.find_time_col(df, cfg)
-        platform_col = utils.find_platform_col(df, cfg)
+        time_col = utils.find_time_col(df_header, cfg)
+        platform_col = utils.find_platform_col(df_header, cfg)
+        lat_col = utils.find_latency_col(df_header, cfg)
+        source_cols = utils.unique_existing_columns(
+            df_header,
+            [time_col, platform_col, lat_col]
+            + utils.trial_detection_source_columns(df_header, cfg),
+        )
     except ValueError as e:
         print(f"  [warn] {csv_path.name}: {e}; skipping.")
-        if report is not None:
-            rr.record_exclusion(report, "platform", csv_path.name, str(e))
-        return pd.DataFrame()
+        report_data["exclusions"][subject_key] = str(e)
+        return [], report_data
 
+    # Read only time/platform/latency/trial-detection columns; platform metrics
+    # never use the other exported AnyMaze signals.
+    df = utils.load_csv(csv_path, usecols=source_cols)
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
     trials, itis, cs_source = utils.detect_trials(df, time_col, cfg)
     windows = trials + itis
     if not windows:
         print(f"  [warn] No trials detected in {csv_path.name}.")
-        if report is not None:
-            rr.record_exclusion(report, "platform", csv_path.name, "no trials detected")
-        return pd.DataFrame()
+        report_data["exclusions"][subject_key] = "no trials detected"
+        return [], report_data
 
-    try:
-        lat_col = utils.find_latency_col(df, cfg)
-    except ValueError as e:
-        print(f"  [warn] {csv_path.name}: {e}; skipping.")
-        if report is not None:
-            rr.record_exclusion(report, "platform", csv_path.name, str(e))
-        return pd.DataFrame()
-
-    # Record columns used
-    if report is not None:
-        rr.record_subject(report, "platform", csv_path.name,
-                          columns_used={"time":          time_col,
-                                        "in_platform":   platform_col,
-                                        "CS+_detection": cs_source,
-                                        "latency_col":   lat_col or "computed from in_platform"})
-        if cfg.get("platform_latency"):
-            rr.record_subject(report, "platform_latency", csv_path.name,
-                              columns_used={"latency_col": lat_col or "computed from in_platform",
-                                            "time":        time_col,
-                                            "in_platform": platform_col})
+    report_data["subjects"][subject_key] = {
+        "columns_used": {
+            "time":          time_col,
+            "in_platform":   platform_col,
+            "CS+_detection": cs_source,
+            "latency_col":   lat_col or "computed from in_platform",
+        },
+        "warnings": [],
+        "skipped":  [],
+    }
 
     day, context, session = utils.parse_folder_bits(day_dir.name)
     t = df[time_col].astype(float).to_numpy()
@@ -129,6 +118,8 @@ def _process_file(csv_path, meta, day_dir, cfg, report=None):
             "context":               context,
             "session_label":         session,
             "_day_folder":           day_dir.name,
+            "_day_dir":              str(day_dir),
+            "_behaviordata_root":    str(day_dir.parent),
             "_source_csv":           csv_path.name,
             "trial_type":            w["type"],
             "trial_index":           w["trial_index"],
@@ -140,47 +131,77 @@ def _process_file(csv_path, meta, day_dir, cfg, report=None):
             "latency_to_platform_s": latency,
         })
 
-    return pd.DataFrame(rows)
+    return rows, report_data
 
 
-def _process_day(day_dir, meta, cfg, report=None):
-    suffix    = cfg["csv_suffix"]
-    subfolder = cfg["platform_subfolder"]
-    csvs      = sorted(day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
-    if not csvs:
-        print(f"  [warn] No matching CSVs in {day_dir}")
-        return pd.DataFrame()
-
-    frames = []
-    for csv_path in csvs:
-        df = _process_file(csv_path, meta, day_dir, cfg, report=report)
-        if not df.empty:
-            frames.append(df)
-
-    if not frames:
-        return pd.DataFrame()
-
-    day_df  = pd.concat(frames, ignore_index=True)
-    out_dir = day_dir / "Analysis" / subfolder
-    out_dir.mkdir(parents=True, exist_ok=True)
-    day_df.to_csv(out_dir / "platform_summary.csv", index=False)
-    print(f"  [ok] Per-day summary written: {out_dir / 'platform_summary.csv'}")
-    return day_df
+def _process_file_star(args):
+    return _process_file(*args)
 
 
-# ── Pass 2 - cumulative collection ──────────────────────────────────────────
+# Worker processes cannot safely mutate the shared run report, so each worker
+# returns small report payloads and the parent process records them here.
+def _merge_report_data(report, report_data, cfg):
+    if report is None:
+        return
+    for key, info in report_data["subjects"].items():
+        rr.record_subject(report, "platform", key,
+                          columns_used=info["columns_used"],
+                          warnings=info["warnings"],
+                          skipped=info["skipped"])
+        if cfg.get("platform_latency"):
+            rr.record_subject(report, "platform_latency", key,
+                              columns_used={
+                                  "latency_col": info["columns_used"].get("latency_col"),
+                                  "time":        info["columns_used"].get("time"),
+                                  "in_platform": info["columns_used"].get("in_platform"),
+                              },
+                              warnings=info["warnings"],
+                              skipped=info["skipped"])
+    for key, reason in report_data["exclusions"].items():
+        rr.record_exclusion(report, "platform", key, reason)
 
-def _collect_cumulative(cfg):
-    subfolder = cfg["platform_subfolder"]
-    frames    = []
+
+def _collect_all_parallel(cfg, report=None):
+    tasks = []
     for bd in cfg["behaviordata_dirs"]:
+        meta   = utils.load_metadata(bd)
+        suffix = cfg["csv_suffix"]
         for day_dir in utils.find_session_dirs(bd):
-            summary = day_dir / "Analysis" / subfolder / "platform_summary.csv"
-            if summary.exists():
-                frames.append(pd.read_csv(summary))
-            else:
-                print(f"  [warn] Missing per-day summary: {summary}")
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+            csvs = sorted(
+                day_dir.glob(f"*{suffix}.csv") if suffix else day_dir.glob("*.csv"))
+            for csv_path in csvs:
+                tasks.append((csv_path, meta, day_dir, cfg))
+
+    if not tasks:
+        print("  [warn] No CSV files found.")
+        return pd.DataFrame()
+
+    print(f"  Found {len(tasks)} CSV files. Processing with {cfg['n_workers']} workers...")
+
+    all_rows = []
+
+    with ProcessPoolExecutor(max_workers=cfg["n_workers"]) as pool:
+        # Track each future's original task so out-of-order completions still
+        # report errors with the right source file.
+        future_to_idx = {
+            pool.submit(_process_file_star, t): i
+            for i, t in enumerate(tasks)
+        }
+        for future in as_completed(future_to_idx):
+            idx      = future_to_idx[future]
+            csv_path = tasks[idx][0]
+            try:
+                rows, report_data = future.result()
+            except Exception as exc:
+                print(f"  [error] {csv_path.name} raised an exception: {exc}")
+                continue
+
+            if rows:
+                all_rows.extend(rows)
+
+            _merge_report_data(report, report_data, cfg)
+
+    return pd.DataFrame(all_rows) if all_rows else pd.DataFrame()
 
 
 # ── Figures ─────────────────────────────────────────────────────────────────
@@ -231,19 +252,30 @@ def _tiled_group_means(df, value_col, ylabel, title_prefix, out_dir, cfg,
     groups    = cfg["canonical_groups"]
     colors    = cfg["treatment_colors"]
     day_order = sorted(df["_day_folder"].unique(), key=utils.day_sort_key)
+    if not day_order:
+        return
 
-    for trial in trial_types:
+    trial_types = tuple(trial_types)
+    has_any = df["_trial_type"].isin(trial_types).any()
+    if not has_any:
+        return
+
+    n_rows = len(trial_types)
+    n_cols = len(day_order)
+    # Put trial type on rows and session day on columns so the group means can
+    # be reviewed from one SVG instead of one file per trial type.
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(min(20, 3.2 * n_cols), 2.9 * n_rows),
+        squeeze=False,
+    )
+    fig.suptitle(f"{title_prefix} (group means)", fontsize=12, y=0.985)
+
+    legend_handles, legend_labels = [], []
+    for r, trial in enumerate(trial_types):
         sub = df[df["_trial_type"] == trial]
-        if sub.empty: continue
-
-        n_cols = len(day_order)
-        fig, axes = plt.subplots(1, n_cols, figsize=(min(18, 3.2*n_cols), 3.4), squeeze=False)
-        axes = axes[0]
-        fig.suptitle(f"{title_prefix} — {trial} (group means)", fontsize=12, y=0.98)
-
-        legend_handles, legend_labels = [], []
         for c, day in enumerate(day_order):
-            ax  = axes[c]
+            ax  = axes[r][c]
             dfd = sub[sub["_day_folder"] == day]
             if dfd.empty:
                 ax.set_axis_off(); continue
@@ -256,20 +288,21 @@ def _tiled_group_means(df, value_col, ylabel, title_prefix, out_dir, cfg,
                 if trt not in legend_labels:
                     legend_labels.append(trt)
                     legend_handles.append(ax.lines[-1])
-            ax.set_title(day, fontsize=9)
+            if r == 0:
+                ax.set_title(day, fontsize=9)
             ax.set_xlabel("Trial #", fontsize=8)
             ax.set_ylim(*(ylim if ylim else (0, 100)))
             ax.grid(True, axis="y", alpha=0.25)
-            if c == 0: ax.set_ylabel(ylabel, fontsize=9)
+            if c == 0:
+                ax.set_ylabel(f"{trial}\n{ylabel}", fontsize=9)
             utils.sparse_xticks(ax, int(dfd["trial_index"].max()))
 
-        if legend_handles:
-            fig.legend(legend_handles, legend_labels, loc="upper center",
-                       ncol=len(legend_labels), frameon=False, fontsize=9,
-                       bbox_to_anchor=(0.5, 0.93))
-        fig.tight_layout(rect=[0, 0, 1, 0.88])
-        tag = trial.replace("+","plus").replace("-","minus").lower()
-        utils.save_fig(fig, out_dir / f"{fname_tag}_{tag}_groupmeans_tiled.svg")
+    if legend_handles:
+        fig.legend(legend_handles, legend_labels, loc="upper center",
+                   ncol=len(legend_labels), frameon=False, fontsize=9,
+                   bbox_to_anchor=(0.5, 0.955))
+    fig.tight_layout(rect=[0, 0, 1, 0.92])
+    utils.save_fig(fig, out_dir / f"{fname_tag}_groupmeans_tiled.svg")
 
 
 def _tiled_by_sex(df, value_col, ylabel, title_prefix, out_dir, cfg,
@@ -398,27 +431,23 @@ def _find_behaviordata_for_cohort(cohort_id, behaviordata_dirs):
 def run(cfg, report=None):
     subfolder = cfg["platform_subfolder"]
 
-    print("  Pass 1: processing raw CSVs day by day...")
-    for bd in cfg["behaviordata_dirs"]:
-        meta = utils.load_metadata(bd)
-        for day_dir in utils.find_session_dirs(bd):
-            _process_day(day_dir, meta, cfg, report=report)
-
-
-    print("  Pass 2: concatenating across all cohorts...")
-    plat_df = _collect_cumulative(cfg)
+    print("  Pass 1: collecting raw CSVs in parallel...")
+    plat_df = _collect_all_parallel(cfg, report=report)
     if plat_df.empty:
         print("  [warn] No platform data found. Skipping figures.")
         return
 
-    print("  Writing combined outputs...")
+    print("  Pass 2: writing combined outputs...")
     _write_outputs(plat_df.copy(), cfg["analysis_out"] / subfolder, cfg, "platform")
 
     if "cohort_id" in plat_df.columns:
         for cohort_id, cohort_df in plat_df.groupby("cohort_id", dropna=False):
             if pd.isna(cohort_id):
                 continue
-            cohort_bd = _find_behaviordata_for_cohort(cohort_id, cfg["behaviordata_dirs"])
+            if "_behaviordata_root" in cohort_df.columns and cohort_df["_behaviordata_root"].notna().any():
+                cohort_bd = Path(cohort_df["_behaviordata_root"].dropna().iloc[0])
+            else:
+                cohort_bd = _find_behaviordata_for_cohort(cohort_id, cfg["behaviordata_dirs"])
             if cohort_bd is None:
                 print(f"  [warn] Cannot locate BehaviorData for cohort '{cohort_id}'; skipping.")
                 continue

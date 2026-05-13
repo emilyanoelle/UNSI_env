@@ -31,11 +31,12 @@ warnings.filterwarnings("ignore")
 # =============================================================================
 
 BEHAVIORDATA_DIRS = [
-    #r"Z:\...\BehaviorData",
-    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\test"
+    #r"Z:\...\Your\Data",
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 1\BehaviorData",
+    r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Early Life Stress Cohort 2\BehaviorData"
 ]
-
-OUTPUT_CSV = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis\HMM movement\hmm_input.csv"
+#r"Z:\...\Output\name.csv",
+OUTPUT_CSV = r"Z:\NIMH DIRP NSI\Projects\PFC Ketamine\Behavior\Fear Conditioning\Analysis-CohortA-C\HMM movement\hmm_input.csv"
 WRITE_PARQUET = True # additional parquet file for better data handling
 
 TREATMENT_ALIASES = {

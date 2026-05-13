@@ -50,21 +50,12 @@ def _process_file(csv_path, meta, day_dir, cfg):
     report_data = {"subjects": {}, "exclusions": {}}
     subject_key = csv_path.name
 
-    test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
-    if behavior_id is None:
-        print(f"  [warn] Could not parse behavior_id from {csv_path.name}; skipping.")
-        report_data["exclusions"][subject_key] = "could not parse behavior_id from filename"
+    test_date, behavior_id, row, exclusion_reason = utils.metadata_for_csv(csv_path, meta)
+    if exclusion_reason is not None:
+        print(f"  [warn] {csv_path.name}: {exclusion_reason}; skipping.")
+        report_data["exclusions"][subject_key] = exclusion_reason
         return [], [], report_data
 
-    row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
-        if meta is not None else pd.DataFrame()
-    if row_meta.empty:
-        print(f"  [warn] behavior_id '{behavior_id}' not in metadata; skipping {csv_path.name}.")
-        report_data["exclusions"][subject_key] = \
-            f"behavior_id '{behavior_id}' not found in metadata"
-        return [], [], report_data
-
-    row       = row_meta.iloc[0]
     animal_id = row.get("animal_id", behavior_id)
     treatment = utils.normalize_treatment(
         row.get("treatment_group", "Unknown"), cfg["treatment_lookup"])
@@ -72,15 +63,22 @@ def _process_file(csv_path, meta, day_dir, cfg):
     litter_id = row.get("litter_id", None)
     cohort_id = row.get("cohort_id", None)
 
-    df = utils.load_csv(csv_path)
+    df_header = utils.load_csv_header(csv_path)
     try:
-        time_col   = utils.find_time_col(df, cfg)
-        freeze_col = utils.find_freeze_col(df, cfg)
+        time_col   = utils.find_time_col(df_header, cfg)
+        freeze_col = utils.find_freeze_col(df_header, cfg)
+        source_cols = utils.unique_existing_columns(
+            df_header,
+            [time_col, freeze_col] + utils.trial_detection_source_columns(df_header, cfg),
+        )
     except ValueError as e:
         print(f"  [warn] {csv_path.name}: {e}; skipping.")
         report_data["exclusions"][subject_key] = str(e)
         return [], [], report_data
 
+    # Parsing only the columns used below avoids paying for unrelated AnyMaze
+    # signals in every worker process.
+    df = utils.load_csv(csv_path, usecols=source_cols)
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
     trials, itis, cs_source = utils.detect_trials(df, time_col, cfg)
     windows = trials + itis
@@ -359,24 +357,37 @@ def _tiled_group_means(df, value_col, ylabel, title_prefix, out_dir, cfg, fname_
     groups    = cfg["canonical_groups"]
     colors    = cfg["treatment_colors"]
     day_order = sorted(df["_day_folder"].unique(), key=utils.day_sort_key)
+    if not day_order:
+        return
 
-    for trial in trial_types:
+    trial_types = tuple(trial_types)
+    has_any = df["_trial_type"].isin(trial_types).any()
+    if not has_any:
+        return
+
+    n_rows = len(trial_types)
+    n_cols = len(day_order)
+    # Put trial type on rows and session day on columns so all group means can
+    # be inspected in one SVG instead of opening one file per trial type.
+    fig, axes = plt.subplots(
+        n_rows, n_cols,
+        figsize=(min(20, 3.2 * n_cols), 2.9 * n_rows),
+        squeeze=False,
+    )
+    fig.suptitle(f"{title_prefix} (group means)", fontsize=12, y=0.985)
+
+    legend_handles, legend_labels = [], []
+    for r, trial in enumerate(trial_types):
         sub = df[df["_trial_type"] == trial]
-        if sub.empty:
-            continue
         trial_ylim = ylim
-        if trial_ylim is None:
+        if trial_ylim is None and not sub.empty:
             trial_ylim = _auto_mean_sem_ylim(
                 sub, value_col, ["_day_folder", "treatment_group", "trial_index"])
+        if trial_ylim is None:
+            trial_ylim = (0, 1)
 
-        n_cols = len(day_order)
-        fig, axes = plt.subplots(1, n_cols, figsize=(min(18, 3.2*n_cols), 3.4), squeeze=False)
-        axes = axes[0]
-        fig.suptitle(f"{title_prefix} — {trial} (group means)", fontsize=12, y=0.98)
-
-        legend_handles, legend_labels = [], []
         for c, day in enumerate(day_order):
-            ax  = axes[c]
+            ax  = axes[r][c]
             dfd = sub[sub["_day_folder"] == day]
             if dfd.empty:
                 ax.set_axis_off(); continue
@@ -389,20 +400,21 @@ def _tiled_group_means(df, value_col, ylabel, title_prefix, out_dir, cfg, fname_
                 if trt not in legend_labels:
                     legend_labels.append(trt)
                     legend_handles.append(ax.lines[-1])
-            ax.set_title(day, fontsize=9)
+            if r == 0:
+                ax.set_title(day, fontsize=9)
             ax.set_xlabel("Trial #", fontsize=8)
             ax.set_ylim(*trial_ylim)
             ax.grid(True, axis="y", alpha=0.25)
-            if c == 0: ax.set_ylabel(ylabel, fontsize=9)
+            if c == 0:
+                ax.set_ylabel(f"{trial}\n{ylabel}", fontsize=9)
             utils.sparse_xticks(ax, int(dfd["trial_index"].max()))
 
-        if legend_handles:
-            fig.legend(legend_handles, legend_labels, loc="upper center",
-                       ncol=len(legend_labels), frameon=False, fontsize=9,
-                       bbox_to_anchor=(0.5, 0.93))
-        fig.tight_layout(rect=(0, 0, 1, 0.88))
-        tag = trial.replace("+","plus").replace("-","minus").lower()
-        utils.save_fig(fig, out_dir / f"{fname_tag}_{tag}_groupmeans_tiled.svg")
+    if legend_handles:
+        fig.legend(legend_handles, legend_labels, loc="upper center",
+                   ncol=len(legend_labels), frameon=False, fontsize=9,
+                   bbox_to_anchor=(0.5, 0.955))
+    fig.tight_layout(rect=(0, 0, 1, 0.92))
+    utils.save_fig(fig, out_dir / f"{fname_tag}_groupmeans_tiled.svg")
 
 
 def _tiled_by_sex(df, value_col, ylabel, title_prefix, out_dir, cfg, fname_tag,
@@ -560,6 +572,32 @@ def _sem(values):
     return float(values.std(ddof=1) / np.sqrt(len(values)))
 
 
+def _treatment_color_map(cfg, groups):
+    configured = cfg.get("treatment_colors", {}) or {}
+    lookup = cfg.get("treatment_lookup", {}) or {}
+    by_label = {}
+    for label, color in configured.items():
+        raw = str(label).strip()
+        canonical = utils.normalize_treatment(raw, lookup)
+        # Accept either canonical treatment names or aliases in TREATMENT_COLORS;
+        # the analysis rows store canonical labels after metadata normalization.
+        for key in {raw, raw.lower(), canonical, canonical.lower()}:
+            by_label[key] = color
+
+    color_map = {}
+    for idx, group in enumerate(groups):
+        raw = str(group).strip()
+        canonical = utils.normalize_treatment(raw, lookup)
+        color_map[group] = (
+            by_label.get(raw)
+            or by_label.get(canonical)
+            or by_label.get(raw.lower())
+            or by_label.get(canonical.lower())
+            or f"C{idx % 10}"
+        )
+    return color_map
+
+
 def _total_freezing_bar_plots(df, out_dir, cfg, fname_tag):
     subject_df = _subject_total_freezing(df)
     if subject_df.empty:
@@ -569,7 +607,6 @@ def _total_freezing_bar_plots(df, out_dir, cfg, fname_tag):
     plot_dir = out_dir / "total_time_freezing_bar_plots"
     plot_dir.mkdir(exist_ok=True)
 
-    colors = cfg["treatment_colors"]
     day_order = sorted(subject_df["_day_folder"].dropna().unique(), key=utils.day_sort_key)
     if not day_order:
         return
@@ -579,6 +616,8 @@ def _total_freezing_bar_plots(df, out_dir, cfg, fname_tag):
     groups.extend(sorted(all_treatments.difference(groups)))
     if not groups:
         return
+
+    colors = _treatment_color_map(cfg, groups)
 
     n_days = len(day_order)
     n_cols = min(3, n_days)

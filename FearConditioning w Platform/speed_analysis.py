@@ -95,6 +95,52 @@ def _downsample(df: pd.DataFrame, time_col: str) -> pd.DataFrame:
     return df_mean
 
 
+def _unique_existing_columns(df: pd.DataFrame, columns: list) -> list:
+    seen = set()
+    selected = []
+    for col in columns:
+        if col is None or col in seen or col not in df.columns:
+            continue
+        seen.add(col)
+        selected.append(col)
+    return selected
+
+
+# Downsample only the columns speed actually needs; AnyMaze exports can contain
+# dozens of numeric event columns, and resampling all of them dominates runtime.
+def _speed_trial_signal_columns(df: pd.DataFrame, cfg: dict) -> list:
+    mode = str(cfg.get("cs_detection_mode", "auto")).strip().lower()
+
+    def _tone_status_columns():
+        return list(utils.find_tone_status_cols(
+            df,
+            cfg.get("tone_status_col_csplus", "cs plus tone status"),
+            cfg.get("tone_status_col_csminus", "cs minus tone status"),
+            cfg,
+        ))
+
+    def _ttl_columns():
+        return [col for col in utils.find_ttl_cols(df, cfg) if col is not None]
+
+    if mode == "tone_status":
+        return _tone_status_columns()
+    if mode == "ttl":
+        return _ttl_columns()
+
+    try:
+        return _tone_status_columns()
+    except ValueError:
+        return _ttl_columns()
+
+
+def _speed_source_columns(df: pd.DataFrame, time_col: str, speed_col: str,
+                          cfg: dict) -> list:
+    return _unique_existing_columns(
+        df,
+        [time_col, speed_col] + _speed_trial_signal_columns(df, cfg),
+    )
+
+
 def _find_trial_onsets(df_ds: pd.DataFrame, time_col: str, cfg: dict) -> tuple:
     trials, itis, _ = utils.detect_trials(df_ds, time_col, cfg)
     t_arr = df_ds[time_col].astype(float).to_numpy()
@@ -147,36 +193,30 @@ def _process_file(csv_path: Path, meta, day_dir: Path, cfg: dict) -> tuple:
     report_data = {"subjects": {}, "exclusions": {}}
     subject_key = csv_path.name
 
-    test_date, behavior_id = utils.parse_filename_bits(csv_path)
-    if behavior_id is None:
-        print(f"  [warn] Could not parse behavior_id from {csv_path.name}; skipping.")
-        report_data["exclusions"][subject_key] = "could not parse behavior_id from filename"
+    test_date, behavior_id, row, exclusion_reason = utils.metadata_for_csv(csv_path, meta)
+    if exclusion_reason is not None:
+        print(f"  [warn] {csv_path.name}: {exclusion_reason}; skipping.")
+        report_data["exclusions"][subject_key] = exclusion_reason
         return [], report_data
 
-    row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
-        if meta is not None else pd.DataFrame()
-    if row_meta.empty:
-        print(f"  [warn] behavior_id '{behavior_id}' not in metadata; skipping {csv_path.name}.")
-        report_data["exclusions"][subject_key] = \
-            f"behavior_id '{behavior_id}' not found in metadata"
-        return [], report_data
-
-    row       = row_meta.iloc[0]
     animal_id = row.get("animal_id", behavior_id)
     treatment = utils.normalize_treatment(
         row.get("treatment_group", "Unknown"), cfg["treatment_lookup"])
     cohort_id = row.get("cohort_id", None)
 
-    df_raw = utils.load_csv(csv_path)
-
+    df_header = utils.load_csv_header(csv_path)
     try:
-        time_col  = utils.find_time_col(df_raw, cfg)
-        speed_col = utils.find_speed_col(df_raw, cfg)
+        time_col  = utils.find_time_col(df_header, cfg)
+        speed_col = utils.find_speed_col(df_header, cfg)
+        speed_source_cols = _speed_source_columns(df_header, time_col, speed_col, cfg)
     except ValueError as e:
         print(f"  [warn] {csv_path.name}: {e}; skipping.")
         report_data["exclusions"][subject_key] = str(e)
         return [], report_data
 
+    # Header-first selective loading keeps the speed worker from parsing every
+    # exported AnyMaze signal before the downsampling step.
+    df_raw = utils.load_csv(csv_path, usecols=speed_source_cols)
     df_raw = df_raw.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
     df_ds  = _downsample(df_raw, time_col)
 
@@ -396,11 +436,13 @@ def make_trial_distance_figure(df_day, cfg, out_path, figure_title=""):
             g = agg[agg["treatment_group"] == grp].sort_values("trial_index")
             if g.empty: continue
             color = colors.get(grp)
-            ax.plot(g["trial_index"], g["mean"], marker="o", linewidth=2,
-                    markersize=4, color=color, label=grp)
+            line, = ax.plot(g["trial_index"], g["mean"], marker="o", linewidth=2,
+                            markersize=4, color=color, label=grp)
+            # Use the line's resolved color so SEM bands stay matched even if a
+            # group falls back to matplotlib's color cycle.
             ax.fill_between(g["trial_index"],
                             g["mean"] - g["sem"], g["mean"] + g["sem"],
-                            alpha=0.18, linewidth=0, color=color)
+                            alpha=0.18, linewidth=0, color=line.get_color())
         ax.set_title(title, fontsize=11, fontweight="bold")
         ax.set_xlabel("Trial #", fontsize=10)
         ax.set_ylabel("Distance (cm)", fontsize=10)
@@ -421,11 +463,12 @@ def make_trial_distance_figure(df_day, cfg, out_path, figure_title=""):
         g = agg_all[agg_all["treatment_group"] == grp].sort_values("x_pos")
         if g.empty: continue
         color = colors.get(grp)
-        ax_br.plot(g["x_pos"], g["mean"], marker="o", linewidth=2,
-                   markersize=4, color=color, label=grp)
+        line, = ax_br.plot(g["x_pos"], g["mean"], marker="o", linewidth=2,
+                           markersize=4, color=color, label=grp)
+        # Match the all-trials SEM band to the actual line color as well.
         ax_br.fill_between(g["x_pos"],
                            g["mean"] - g["sem"], g["mean"] + g["sem"],
-                           alpha=0.18, linewidth=0, color=color)
+                           alpha=0.18, linewidth=0, color=line.get_color())
     ax_br.set_title("All Trials (ordered by onset time)", fontsize=11, fontweight="bold")
     ax_br.set_xlabel("Trial", fontsize=10)
     ax_br.set_ylabel("Distance (cm)", fontsize=10)
@@ -808,6 +851,23 @@ def _speed_dataframe(rows, cfg):
     return df[ordered]
 
 
+# Parquet requires each column to have a consistent physical type. Metadata
+# columns such as animal_id can arrive as mixed int/string values from Excel.
+def _coerce_speed_parquet_text_columns(df: pd.DataFrame) -> pd.DataFrame:
+    text_cols = [
+        "source_behaviordata", "source_behaviordata_name",
+        "cohort_id", "test_date", "day", "context", "session_label",
+        "animal_id", "behavior_id", "treatment_group",
+        "file_name", "_source_csv", "_day_folder",
+        "trial_kind", "cs_type",
+    ]
+    out = df.copy()
+    for col in text_cols:
+        if col in out.columns:
+            out[col] = out[col].astype("string")
+    return out
+
+
 def _write_speed_parquet(df_all, cfg):
     if df_all.empty:
         print("  [warn] No speed data found; skipping speed_trial_windows.parquet.")
@@ -817,7 +877,7 @@ def _write_speed_parquet(df_all, cfg):
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = out_dir / "speed_trial_windows.parquet"
     try:
-        df_all.to_parquet(out_path, index=False)
+        _coerce_speed_parquet_text_columns(df_all).to_parquet(out_path, index=False)
     except ImportError as e:
         raise RuntimeError(
             "Speed analysis writes parquet by default. Install pyarrow "

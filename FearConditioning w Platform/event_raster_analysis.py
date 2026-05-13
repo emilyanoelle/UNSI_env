@@ -111,19 +111,10 @@ def _subject_label(subject):
     return " | ".join(bits)
 
 
-def _metadata_for_file(csv_path, meta, cfg, warnings):
-    test_date, behavior_id = utils.parse_filename_bits(csv_path, meta)
-    if behavior_id is None:
-        behavior_id = csv_path.stem
-        warnings.append("could not parse behavior_id from filename; using file stem")
-
-    row_meta = utils.find_metadata_for_behavior(meta, behavior_id) \
-        if meta is not None else pd.DataFrame()
-    if row_meta.empty:
-        warnings.append("behavior_id not found in metadata; using filename-derived labels")
-        row = {}
-    else:
-        row = row_meta.iloc[0]
+def _metadata_for_file(csv_path, meta, cfg):
+    test_date, behavior_id, row, exclusion_reason = utils.metadata_for_csv(csv_path, meta)
+    if exclusion_reason is not None:
+        return None, exclusion_reason
 
     animal_id = row.get("animal_id", behavior_id)
     treatment = utils.normalize_treatment(
@@ -132,7 +123,7 @@ def _metadata_for_file(csv_path, meta, cfg, warnings):
     litter_id = row.get("litter_id", None)
     cohort_id = row.get("cohort_id", None)
 
-    return test_date, behavior_id, animal_id, treatment, sex, litter_id, cohort_id
+    return (test_date, behavior_id, animal_id, treatment, sex, litter_id, cohort_id), None
 
 
 def _optional_signal_column(df, finder, label, warnings):
@@ -246,21 +237,47 @@ def _process_file(csv_path: Path, meta, day_dir: Path, cfg: dict):
     warnings = []
     subject_key = csv_path.name
 
-    test_date, behavior_id, animal_id, treatment, sex, litter_id, cohort_id = \
-        _metadata_for_file(csv_path, meta, cfg, warnings)
+    metadata, exclusion_reason = _metadata_for_file(csv_path, meta, cfg)
+    if exclusion_reason is not None:
+        report_data["exclusions"][subject_key] = exclusion_reason
+        return None, [], report_data
+    test_date, behavior_id, animal_id, treatment, sex, litter_id, cohort_id = metadata
 
     try:
-        df = utils.load_csv(csv_path)
+        df_header = utils.load_csv_header(csv_path)
     except Exception as exc:
         report_data["exclusions"][subject_key] = f"could not read CSV: {exc}"
         return None, [], report_data
 
     try:
-        time_col = utils.find_time_col(df, cfg)
+        time_col = utils.find_time_col(df_header, cfg)
     except ValueError as exc:
         report_data["exclusions"][subject_key] = str(exc)
         return None, [], report_data
 
+    source_cols = [time_col]
+    for label, finder in (
+        ("freezing", lambda d: utils.find_freeze_col(d, cfg)),
+        ("platform", lambda d: utils.find_platform_col(d, cfg)),
+        ("US shocker track", lambda d: utils.find_shocker_col(d, cfg)),
+    ):
+        try:
+            source_cols.append(finder(df_header))
+        except ValueError as exc:
+            warnings.append(f"{label} unavailable: {exc}")
+    try:
+        source_cols.extend(utils.trial_detection_source_columns(df_header, cfg))
+    except ValueError as exc:
+        warnings.append(f"CS tone tracks unavailable: {exc}")
+    try:
+        source_cols.extend(utils.find_us_cols(df_header, cfg))
+    except ValueError as exc:
+        warnings.append(f"US TTL tracks unavailable: {exc}")
+    source_cols = utils.unique_existing_columns(df_header, source_cols)
+
+    # Raster generation only needs state/event tracks, not every exported
+    # measurement column, so keep this sequential pass lightweight.
+    df = utils.load_csv(csv_path, usecols=source_cols)
     df = df.dropna(subset=[time_col]).sort_values(time_col).reset_index(drop=True)
     if df.empty:
         report_data["exclusions"][subject_key] = "no valid time rows"

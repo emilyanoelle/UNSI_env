@@ -51,6 +51,8 @@ ANALYSIS_KEYS = {
     "eee":              "EEE",
     "event_raster":     "Event Rasters",
     "speed":            "Speed",
+    "high_speed_bouts": "High Speed Bouts",
+    "statistics":       "Statistics",
 }
 
 # Sheet name → tab colour
@@ -64,6 +66,8 @@ _TAB_COLORS = {
     "EEE":                "7030A0",
     "Event Rasters":      "C65911",
     "Speed":              "1F6B3A",
+    "High Speed Bouts":   "70AD47",
+    "Statistics":         "8064A2",
     "Excluded Subjects":  "C00000",
     "Per-Subject Log":    "595959",
 }
@@ -79,6 +83,8 @@ _SHEET_ORDER = [
     "EEE",
     "Event Rasters",
     "Speed",
+    "High Speed Bouts",
+    "Statistics",
     "Excluded Subjects",
     "Per-Subject Log",
 ]
@@ -281,6 +287,8 @@ def _overview_sheet(wb, report: dict, existing_ts: dict, ran_this_session: set):
         ("eee",              "EEE",              "EEE"),
         ("event_raster",     "Event Rasters",    "Event Rasters"),
         ("speed",            "Speed",            "Speed"),
+        ("high_speed_bouts", "High Speed Bouts", "High Speed Bouts"),
+        ("statistics",       "Statistics",       "Statistics"),
     ]
 
     for ri, (key, label, sheet_name) in enumerate(analysis_display):
@@ -350,6 +358,9 @@ def _overview_sheet(wb, report: dict, existing_ts: dict, ran_this_session: set):
         ("Freezing by sex",          cfg.get("freezing_by_sex")),
         ("Freezing by litter",       cfg.get("freezing_by_litter")),
         ("Platform by sex",          cfg.get("platform_by_sex")),
+        ("Statistics by cohort",     cfg.get("stats_by_cohort")),
+        ("Statistics combined",      cfg.get("stats_combined")),
+        ("Statistics GG correction", cfg.get("stats_use_greenhouse_geisser")),
         ("EEE by sex",               cfg.get("eee_by_sex")),
         ("Event raster subfolder",   cfg.get("event_raster_subfolder")),
     ]
@@ -610,6 +621,33 @@ def write_excel_report(report: dict, out_dir: Path):
              ("Bin width",       "100 ms"),
              ("Canonical output", "speed_trial_windows.parquet"),
              ("Optional Excel workbooks", cfg.get("speed_write_excel", False))],
+        )
+
+    if cfg.get("run_high_speed_bouts"):
+        sheets_to_write["High Speed Bouts"] = (
+            "high_speed_bouts",
+            [("Subfolder", cfg.get("high_speed_subfolder")),
+             ("HMM parquet", cfg.get("high_speed_motion_parquet")),
+             ("Threshold", cfg.get("high_speed_min_displacement_per_100ms")),
+             ("Minimum bout duration (s)", cfg.get("high_speed_min_bout_s")),
+             ("Merge gaps up to (s)", cfg.get("high_speed_max_gap_s")),
+             ("By sex", cfg.get("high_speed_by_sex")),
+             ("Prism export", cfg.get("prism_export"))],
+        )
+
+    if cfg.get("run_statistics"):
+        sheets_to_write["Statistics"] = (
+            "statistics",
+            [("Subfolder", cfg.get("statistics_subfolder")),
+             ("Pass 2 by cohort", cfg.get("stats_by_cohort")),
+             ("Pass 3 combined", cfg.get("stats_combined")),
+             ("Included treatments", cfg.get("stats_include_treatments") or "all"),
+             ("Greenhouse-Geisser correction",
+              cfg.get("stats_use_greenhouse_geisser")),
+             ("Rscript path", cfg.get("stats_rscript_path")),
+             ("Rscript command", cfg.get("stats_rscript_command") or "not set"),
+             ("Balanced data method", "afex RM ANOVA"),
+             ("Missing-data method", "lmerTest/lme4 mixed model")],
         )
 
     ran_this_session = set(sheets_to_write.keys())
